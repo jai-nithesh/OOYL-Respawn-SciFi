@@ -4,29 +4,20 @@ using TMPro;
 /// <summary>
 /// EnemyAI – Geometric NPC Hunter with Health, Animation, and Detection UI.
 /// ──────────────────────────────────────────────────────────────────────────────
-/// PURPOSE:
-///   A fully-featured enemy NPC that:
-///   1. Detects the player within a configurable radius.
-///   2. Shows a World Space "Hey, you there!" text popup on detection.
-///   3. Hunts the player using Rigidbody2D velocity (matching our physics standard).
-///   4. Aims using Mathf.Atan2 – the EXACT same geometric system as the player.
-///   5. Fires ricochet bullets from a WeaponPivot/FirePoint (mirroring PlayerController).
-///   6. Has a configurable health pool and takes damage from player bullets.
-///   7. Drives an Animator with movement & aiming blend trees.
+/// COLLISION ARCHITECTURE (v2 – Two-Collider System):
+///   Damage detection is now handled by DamageReceiver.cs on the "Hitbox" child.
+///   OnCollisionEnter2D is REMOVED from this script.
+///   The enemy root has a solid BoxCollider2D at the feet (layer: CharacterFeet)
+///   for environment blocking only. The Hitbox child has a trigger BoxCollider2D
+///   (layer: CharacterBody) for bullet detection.
 ///
-/// TAGGING SYSTEM (CRITICAL):
-///   • Player bullets must be tagged:   "PlayerBullet"
-///   • Enemy bullets must be tagged:    "EnemyBullet"
-///   • The player GameObject must be tagged: "Player"
-///   The NPC only takes damage from "PlayerBullet"-tagged projectiles.
-///   This prevents self-damage from its own ricocheting shots.
-///
-/// HIERARCHY SETUP:
-///   Enemy (this script, Rigidbody2D, Collider2D, Animator, SpriteRenderer)
+/// HIERARCHY:
+///   Enemy (Layer: CharacterFeet) – this script, Rigidbody2D, BoxCollider2D (feet)
 ///   ├── WeaponPivot (empty Transform – rotates to aim)
-///   │   └── FirePoint (empty Transform – offset from center, bullet spawn point)
+///   │   └── FirePoint (empty Transform – bullet spawn)
+///   ├── Hitbox (Layer: CharacterBody) – BoxCollider2D (Is Trigger), DamageReceiver.cs
 ///   └── DetectionCanvas (World Space Canvas)
-///       └── DetectionText (TextMeshProUGUI – "Hey, you there!")
+///       └── DetectionText (TextMeshProUGUI)
 /// ──────────────────────────────────────────────────────────────────────────────
 /// </summary>
 [RequireComponent(typeof(Rigidbody2D))]
@@ -68,15 +59,12 @@ public class EnemyAI : MonoBehaviour
     [Tooltip("Number of hits the NPC can take before being destroyed.")]
     public int maxHealth = 5;
 
-    [Tooltip("Tag on the player's bullets. NPC ONLY takes damage from this tag.")]
-    public string playerBulletTag = "PlayerBullet";
-
     // ───────── Detection UI ─────────
     [Header("Detection UI")]
-    [Tooltip("World Space Canvas child (auto-found if null). Must have a TextMeshProUGUI child.")]
+    [Tooltip("World Space Canvas child (auto-found if null).")]
     public Canvas detectionCanvas;
 
-    [Tooltip("The TextMeshProUGUI component that shows 'Hey, you there!' (auto-found if null).")]
+    [Tooltip("The TextMeshProUGUI component (auto-found if null).")]
     public TextMeshProUGUI detectionText;
 
     [Tooltip("The message displayed when the player is first detected.")]
@@ -95,7 +83,7 @@ public class EnemyAI : MonoBehaviour
     private bool isPlayerInRange = false;
     private float detectionMessageTimer = 0f;
 
-    // ── Cached Animator Parameter Hashes (performance) ──
+    // ── Cached Animator Parameter Hashes ──
     private static readonly int HashMoveX = Animator.StringToHash("MoveX");
     private static readonly int HashMoveY = Animator.StringToHash("MoveY");
     private static readonly int HashAimX = Animator.StringToHash("AimX");
@@ -112,7 +100,7 @@ public class EnemyAI : MonoBehaviour
         anim = GetComponent<Animator>();
         currentHealth = maxHealth;
 
-        // ── Auto-find detection UI if not assigned ──
+        // Auto-find detection UI if not assigned
         if (detectionCanvas == null)
         {
             detectionCanvas = GetComponentInChildren<Canvas>(true);
@@ -122,7 +110,7 @@ public class EnemyAI : MonoBehaviour
             detectionText = detectionCanvas.GetComponentInChildren<TextMeshProUGUI>(true);
         }
 
-        // ── Hide detection UI at start ──
+        // Hide detection UI at start
         if (detectionCanvas != null)
         {
             detectionCanvas.gameObject.SetActive(false);
@@ -131,7 +119,7 @@ public class EnemyAI : MonoBehaviour
 
     private void Start()
     {
-        // ── Find the Player ──
+        // Find the Player (persistent under Core, so FindWithTag works)
         GameObject playerObj = GameObject.FindWithTag(playerTag);
         if (playerObj != null)
         {
@@ -145,7 +133,13 @@ public class EnemyAI : MonoBehaviour
 
     private void Update()
     {
-        if (playerTransform == null) return;
+        if (playerTransform == null)
+        {
+            // Retry finding the player (it may have loaded after this enemy)
+            GameObject playerObj = GameObject.FindWithTag(playerTag);
+            if (playerObj != null) playerTransform = playerObj.transform;
+            else return;
+        }
 
         // ── Distance Check ──
         float distToPlayer = Vector2.Distance(transform.position, playerTransform.position);
@@ -168,13 +162,11 @@ public class EnemyAI : MonoBehaviour
             }
         }
 
-        // ── Combat Logic (only when player is detected AND in range) ──
+        // ── Combat Logic ──
         if (hasDetectedPlayer && isPlayerInRange)
         {
-            // Aim weapon at player (geometric Atan2 – identical to PlayerController)
             AimWeaponPivotAtPlayer();
 
-            // Fire at the player
             if (Time.unscaledTime >= nextFireTime)
             {
                 Fire();
@@ -190,27 +182,22 @@ public class EnemyAI : MonoBehaviour
     {
         if (playerTransform == null) return;
 
-        // ── Hunting Movement (only when detected and outside stopping distance) ──
         if (hasDetectedPlayer && isPlayerInRange)
         {
             float distToPlayer = Vector2.Distance(transform.position, playerTransform.position);
 
             if (distToPlayer > stoppingDistance)
             {
-                // Move towards the player using Rigidbody2D velocity
-                // (matching our physics standard from PlayerController)
                 Vector2 direction = ((Vector2)playerTransform.position - (Vector2)transform.position).normalized;
                 rb.linearVelocity = direction * moveSpeed;
             }
             else
             {
-                // Within stopping distance – halt movement but keep aiming
                 rb.linearVelocity = Vector2.zero;
             }
         }
         else
         {
-            // Not detected or out of range – idle
             rb.linearVelocity = Vector2.zero;
         }
     }
@@ -218,10 +205,6 @@ public class EnemyAI : MonoBehaviour
     // ──────────────────────────────────────────────────
     // Detection UI
     // ──────────────────────────────────────────────────
-    /// <summary>
-    /// Called once when the player first enters the detection radius.
-    /// Shows the World Space Canvas text popup.
-    /// </summary>
     private void OnPlayerDetected()
     {
         if (detectionCanvas != null)
@@ -237,7 +220,6 @@ public class EnemyAI : MonoBehaviour
         }
     }
 
-    /// <summary>Hides the detection message after the timer expires.</summary>
     private void HideDetectionMessage()
     {
         if (detectionCanvas != null)
@@ -249,24 +231,14 @@ public class EnemyAI : MonoBehaviour
     // ──────────────────────────────────────────────────
     // Geometric Aiming (Atan2) – Mirrors PlayerController
     // ──────────────────────────────────────────────────
-    /// <summary>
-    /// Calculates the exact angle between the NPC and the player
-    /// using Mathf.Atan2 and rotates the WeaponPivot to face the player.
-    /// This is the EXACT SAME mathematical system used by the PlayerController
-    /// for mouse aiming, but targeting playerTransform instead of the mouse cursor.
-    /// </summary>
     private void AimWeaponPivotAtPlayer()
     {
         if (weaponPivot == null || playerTransform == null) return;
 
-        // Direction vector from NPC to player
         Vector2 direction = (Vector2)(playerTransform.position - transform.position);
-
-        // Calculate angle in degrees using Atan2 (identical to PlayerController line 169-170)
         float angleRad = Mathf.Atan2(direction.y, direction.x);
         float angleDeg = angleRad * Mathf.Rad2Deg;
 
-        // Apply rotation to WeaponPivot (rotating around Z axis in 2D)
         weaponPivot.rotation = Quaternion.Euler(0f, 0f, angleDeg);
     }
 
@@ -274,9 +246,9 @@ public class EnemyAI : MonoBehaviour
     // Weapon Firing – Mirrors PlayerController.Fire()
     // ──────────────────────────────────────────────────
     /// <summary>
-    /// Instantiates the bullet prefab at the FirePoint with matching rotation.
-    /// Mirrors PlayerController.Fire() exactly (line 182-186).
-    /// The bullet prefab should be a RED variant tagged "EnemyBullet".
+    /// Instantiates the bullet prefab at the FirePoint.
+    /// Tags it "EnemyBullet" and uses Physics2D.IgnoreCollision to prevent
+    /// the bullet from hitting this enemy's own colliders (feet + hitbox).
     /// </summary>
     private void Fire()
     {
@@ -284,39 +256,68 @@ public class EnemyAI : MonoBehaviour
 
         GameObject bullet = Instantiate(bulletPrefab, firePoint.position, firePoint.rotation);
 
-        // ── Set animation shoot trigger ──
+        // Tag the bullet
+        bullet.tag = "EnemyBullet";
+        int bLayer = LayerMask.NameToLayer("Bullet");
+        if (bLayer != -1) bullet.layer = bLayer;
+
+        // Set ownership on the RicochetBullet component
+        RicochetBullet ricochet = bullet.GetComponent<RicochetBullet>();
+        if (ricochet != null)
+        {
+            ricochet.ownerTag = gameObject.tag;
+        }
+
+        // ── Physics2D.IgnoreCollision ──
+        // Prevent the bullet from colliding with THIS enemy's feet collider
+        // and hitbox trigger. This is instance-level, so other enemies can
+        // still be hit by this bullet.
+        Collider2D[] myColliders = GetComponentsInChildren<Collider2D>();
+        Collider2D[] bulletColliders = bullet.GetComponentsInChildren<Collider2D>();
+        foreach (Collider2D mc in myColliders)
+        {
+            foreach (Collider2D bc in bulletColliders)
+            {
+                Physics2D.IgnoreCollision(mc, bc);
+            }
+        }
+
+        // Set animation shoot trigger
         if (anim != null)
         {
             anim.SetTrigger(HashShootTrigger);
         }
-
-        // Safety: Ensure the bullet is tagged correctly so it doesn't damage this NPC
-        // (The prefab should already be tagged "EnemyBullet", but we enforce it here)
-        bullet.tag = "EnemyBullet";
     }
 
     // ──────────────────────────────────────────────────
     // Health & Damage System
     // ──────────────────────────────────────────────────
     /// <summary>
-    /// Called when a physics collision occurs.
-    /// Only takes damage from projectiles tagged "PlayerBullet".
-    /// Ignores its own ricocheting shots (tagged "EnemyBullet").
+    /// Direct collision fallback: if a player bullet hits the enemy root's collider.
     /// </summary>
     private void OnCollisionEnter2D(Collision2D collision)
     {
-        if (collision.gameObject.CompareTag(playerBulletTag))
+        if (collision.gameObject.CompareTag("PlayerBullet"))
         {
-            // Destroy the bullet on impact
-            Destroy(collision.gameObject);
-
-            // Apply damage
             TakeDamage(1);
+            Destroy(collision.gameObject);
         }
     }
 
     /// <summary>
-    /// Reduces health by the given amount. Destroys the NPC when health reaches 0.
+    /// Direct trigger fallback: if a player bullet trigger enters this root.
+    /// </summary>
+    private void OnTriggerEnter2D(Collider2D other)
+    {
+        if (other.CompareTag("PlayerBullet"))
+        {
+            TakeDamage(1);
+            Destroy(other.gameObject);
+        }
+    }
+
+    /// <summary>
+    /// Called when a hostile bullet deals damage.
     /// </summary>
     public void TakeDamage(int amount)
     {
@@ -331,38 +332,19 @@ public class EnemyAI : MonoBehaviour
         }
     }
 
-    /// <summary>
-    /// Handles NPC death. Destroys the GameObject.
-    /// Extend this to add death VFX, sounds, score, or loot drops.
-    /// </summary>
     private void Die()
     {
         Debug.Log($"[EnemyAI] {gameObject.name} destroyed!");
-
-        // TODO: Spawn death VFX / particles here
-        // TODO: Add score to GameManager
-
         Destroy(gameObject);
     }
 
     // ──────────────────────────────────────────────────
     // Animation Controller Integration
     // ──────────────────────────────────────────────────
-    /// <summary>
-    /// Feeds movement and aiming vectors into the Animator to drive
-    /// Walk and Shoot Blend Trees.
-    ///
-    /// Parameters fed to the Animator:
-    ///   • MoveX, MoveY  – normalized movement direction (for Walk Blend Tree)
-    ///   • AimX, AimY    – normalized aim direction toward player (for Shoot Blend Tree)
-    ///   • IsMoving       – bool, true when the NPC is walking
-    ///   • ShootTrigger   – trigger, set in Fire() to play shoot animation
-    /// </summary>
     private void UpdateAnimations()
     {
         if (anim == null) return;
 
-        // ── Movement Vector ──
         Vector2 velocity = rb.linearVelocity;
         bool isMoving = velocity.sqrMagnitude > 0.01f;
 
@@ -375,7 +357,6 @@ public class EnemyAI : MonoBehaviour
 
         anim.SetBool(HashIsMoving, isMoving);
 
-        // ── Aiming Vector (toward player) ──
         if (playerTransform != null && hasDetectedPlayer)
         {
             Vector2 aimDir = ((Vector2)playerTransform.position - (Vector2)transform.position).normalized;
@@ -389,11 +370,9 @@ public class EnemyAI : MonoBehaviour
     // ──────────────────────────────────────────────────
     private void OnDrawGizmosSelected()
     {
-        // Detection radius (yellow)
         Gizmos.color = Color.yellow;
         Gizmos.DrawWireSphere(transform.position, detectionRadius);
 
-        // Stopping distance (red)
         Gizmos.color = Color.red;
         Gizmos.DrawWireSphere(transform.position, stoppingDistance);
     }
@@ -401,9 +380,6 @@ public class EnemyAI : MonoBehaviour
     // ──────────────────────────────────────────────────
     // Public API
     // ──────────────────────────────────────────────────
-    /// <summary>Current health of this NPC.</summary>
     public int CurrentHealth => currentHealth;
-
-    /// <summary>True if the NPC has ever detected the player.</summary>
     public bool HasDetectedPlayer => hasDetectedPlayer;
 }

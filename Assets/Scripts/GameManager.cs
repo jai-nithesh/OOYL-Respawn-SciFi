@@ -4,22 +4,24 @@ using UnityEngine.SceneManagement;
 using UnityEngine.UI;
 
 /// <summary>
-/// Persistent Singleton GameManager.
+/// GameManager – Bulletproof Persistent Singleton.
 /// ──────────────────────────────────────────────────────────────────────────────
-/// PURPOSE:
-///   1. Wraps the Player, Camera, and UI hierarchy inside a single "Core"
-///      GameObject marked with DontDestroyOnLoad so they survive scene changes.
-///   2. Teleports the player to a tagged "SpawnPoint" every time a new scene loads.
-///   3. Provides LoadNextLevel() for LevelTransition triggers.
-///   4. Plays a hardcoded white-flash Coroutine when transitioning from
-///      Level 3 (Build Index 2) → Level 4 (Build Index 3).
+/// ARCHITECTURE:
+///   Lives on the "Core" root GameObject in your first GAMEPLAY scene (Level 1).
+///   DontDestroyOnLoad keeps Core (Player, Camera, UI) alive across all scenes.
+///   Teleports the player to the scene's "SpawnPoint" after every load.
+///   Destroys rogue cameras from newly loaded scenes to prevent conflicts.
+///   Plays a configurable white-flash Coroutine for special transitions.
 ///
-/// SETUP:
-///   • Create an empty GameObject called "Core" at the root of your first scene.
-///   • Parent your Player, Main Camera, and any UI Canvases under "Core".
-///   • Attach this script to "Core".
-///   • In every level scene, place an empty GameObject at the desired start
-///     position and set its Tag to "SpawnPoint".
+/// CRITICAL FIXES (v2):
+///   • Strict singleton: duplicate's OnEnable is blocked via enabled=false so
+///     it never double-subscribes to sceneLoaded.
+///   • Deferred spawn: teleport waits one rendered frame so all scene objects
+///     (SpawnPoint) are guaranteed active and findable.
+///   • Rogue camera cleanup: any extra "MainCamera"-tagged cameras from new
+///     scenes are destroyed on load.
+///   • PlayerController camera reference is refreshed after every scene load.
+///   • Flash transition indices are Inspector-configurable (not hardcoded).
 /// ──────────────────────────────────────────────────────────────────────────────
 /// </summary>
 public class GameManager : MonoBehaviour
@@ -35,8 +37,17 @@ public class GameManager : MonoBehaviour
     [Tooltip("The CameraFollow component on the Main Camera (child of Core).")]
     public CameraFollow cameraFollow;
 
+    [Tooltip("The persistent Main Camera (child of Core). Used to destroy rogue cameras.")]
+    public Camera persistentCamera;
+
     // ───────── Flash Effect Settings ─────────
-    [Header("Level 3 → 4 Flash Effect")]
+    [Header("Flash Transition")]
+    [Tooltip("Build Index of the scene to transition FROM (triggers the flash).")]
+    public int flashFromIndex = 3;
+
+    [Tooltip("Build Index of the scene to transition TO (loaded during the flash).")]
+    public int flashToIndex = 4;
+
     [Tooltip("Duration of the fade-in to white (seconds).")]
     public float flashFadeInDuration = 0.5f;
 
@@ -60,9 +71,12 @@ public class GameManager : MonoBehaviour
     // ──────────────────────────────────────────────────
     private void Awake()
     {
-        // ── Enforce Singleton Pattern ──
+        // ── Strict Singleton ──
         if (Instance != null && Instance != this)
         {
+            // CRITICAL: disable the component BEFORE Destroy to prevent
+            // OnEnable from firing and double-subscribing to sceneLoaded.
+            enabled = false;
             Destroy(gameObject);
             return;
         }
@@ -72,12 +86,20 @@ public class GameManager : MonoBehaviour
 
         CurrentLevelIndex = SceneManager.GetActiveScene().buildIndex;
 
+        // Auto-find persistent camera if not assigned
+        if (persistentCamera == null && cameraFollow != null)
+        {
+            persistentCamera = cameraFollow.GetComponent<Camera>();
+        }
+
         // Pre-build the flash overlay (hidden by default)
         CreateFlashOverlay();
     }
 
     private void OnEnable()
     {
+        // Only the true singleton instance subscribes
+        if (Instance != this) return;
         SceneManager.sceneLoaded += OnSceneLoaded;
     }
 
@@ -86,51 +108,108 @@ public class GameManager : MonoBehaviour
         SceneManager.sceneLoaded -= OnSceneLoaded;
     }
 
+    private void OnDestroy()
+    {
+        // Clean up singleton reference if this instance is destroyed
+        if (Instance == this)
+        {
+            Instance = null;
+        }
+    }
+
     // ──────────────────────────────────────────────────
     // Scene Load Callback
     // ──────────────────────────────────────────────────
-    /// <summary>
-    /// Called every time a new scene finishes loading.
-    /// Finds the "SpawnPoint" tag and teleports the player there.
-    /// </summary>
     private void OnSceneLoaded(Scene scene, LoadSceneMode mode)
     {
         CurrentLevelIndex = scene.buildIndex;
 
-        // ── Teleport Player to SpawnPoint ──
-        GameObject spawnObj = GameObject.FindWithTag("SpawnPoint");
-        if (spawnObj != null && playerTransform != null)
+        // ── Kill rogue cameras ──
+        // New scenes created from Unity's template include a Main Camera.
+        // If left alive, two cameras render simultaneously and Camera.main
+        // returns the wrong one, breaking PlayerController's Atan2 aiming.
+        DestroyRogueCameras();
+
+        // ── Deferred spawn teleport ──
+        // Wait one rendered frame so every scene object (including SpawnPoint)
+        // is guaranteed to be Awake, Start-ed, and active.
+        StartCoroutine(DeferredSpawnTeleport());
+    }
+
+    /// <summary>
+    /// Waits one frame, then finds "SpawnPoint" and teleports the player there.
+    /// This guarantees all scene objects are fully initialised before we search.
+    /// </summary>
+    private IEnumerator DeferredSpawnTeleport()
+    {
+        // Wait until the end of the frame so all Awake/Start calls have finished
+        yield return null;
+
+        if (playerTransform == null)
         {
-            // Disable physics momentarily to prevent collision jitter on teleport
+            Debug.LogError("[GameManager] playerTransform is null! Cannot teleport.");
+            yield break;
+        }
+
+        GameObject spawnObj = GameObject.FindWithTag("SpawnPoint");
+        if (spawnObj != null)
+        {
+            // Zero-out velocity before teleporting to prevent momentum carry-over
             Rigidbody2D playerRb = playerTransform.GetComponent<Rigidbody2D>();
             if (playerRb != null)
             {
                 playerRb.linearVelocity = Vector2.zero;
+                playerRb.angularVelocity = 0f;
             }
 
+            // Teleport
             playerTransform.position = spawnObj.transform.position;
+
+            // Snap camera immediately (no SmoothDamp lag after teleport)
+            if (cameraFollow != null && cameraFollow.target != null)
+            {
+                Vector3 camPos = cameraFollow.transform.position;
+                cameraFollow.transform.position = new Vector3(
+                    spawnObj.transform.position.x,
+                    spawnObj.transform.position.y,
+                    camPos.z
+                );
+            }
         }
-        else if (spawnObj == null)
+        else
         {
-            Debug.LogWarning($"[GameManager] No GameObject tagged 'SpawnPoint' found in scene '{scene.name}'. " +
-                             "Player position was not changed.");
+            Debug.LogWarning($"[GameManager] No 'SpawnPoint' tagged object found in scene " +
+                             $"'{SceneManager.GetActiveScene().name}'. Player position unchanged.");
         }
 
-        // ── Re-acquire Camera.main reference for PlayerController ──
-        // After a scene load, Camera.main may point to a destroyed camera.
-        // Since our camera is persistent (child of Core), we force the
-        // PlayerController to re-cache it.
-        PlayerController pc = playerTransform != null
-            ? playerTransform.GetComponent<PlayerController>()
-            : null;
-
+        // ── Refresh PlayerController's camera reference ──
+        PlayerController pc = playerTransform.GetComponent<PlayerController>();
         if (pc != null)
         {
-            // PlayerController.Awake() caches Camera.main – we refresh it here.
-            // We use reflection-free approach: just set the field if it's public,
-            // or call Awake equivalent. Since mainCam is private, we add a
-            // public method below. For now, the camera is persistent so Camera.main
-            // still works because our camera's tag is "MainCamera".
+            pc.RefreshCameraReference(persistentCamera);
+        }
+    }
+
+    // ──────────────────────────────────────────────────
+    // Rogue Camera Cleanup
+    // ──────────────────────────────────────────────────
+    /// <summary>
+    /// Finds all cameras tagged "MainCamera" and destroys any that are NOT
+    /// our persistent camera. Prevents dual-rendering and Camera.main conflicts.
+    /// </summary>
+    private void DestroyRogueCameras()
+    {
+        if (persistentCamera == null) return;
+
+        Camera[] allCameras = Camera.allCameras;
+        for (int i = 0; i < allCameras.Length; i++)
+        {
+            if (allCameras[i] != persistentCamera)
+            {
+                Debug.Log($"[GameManager] Destroying rogue camera: '{allCameras[i].gameObject.name}' " +
+                          $"in scene '{allCameras[i].gameObject.scene.name}'");
+                Destroy(allCameras[i].gameObject);
+            }
         }
     }
 
@@ -139,8 +218,7 @@ public class GameManager : MonoBehaviour
     // ──────────────────────────────────────────────────
     /// <summary>
     /// Loads the next scene in the Build Index.
-    /// If transitioning FROM Level 3 (index 2) TO Level 4 (index 3),
-    /// plays the white flash Coroutine instead of a direct load.
+    /// If transitioning from flashFromIndex → flashToIndex, plays the white flash.
     /// </summary>
     public void LoadNextLevel()
     {
@@ -148,15 +226,14 @@ public class GameManager : MonoBehaviour
 
         int nextIndex = CurrentLevelIndex + 1;
 
-        // Safety: wrap around or clamp if we exceed the total scene count
-        if (nextIndex >= SceneManager.sceneCount)
+        if (nextIndex >= SceneManager.sceneCountInBuildSettings)
         {
             Debug.Log("[GameManager] Final level reached. No more scenes to load.");
             return;
         }
 
-        // ── Level 3 → Level 4 Flash (Build Index 2 → 3) ──
-        if (CurrentLevelIndex == 2 && nextIndex == 3)
+        // ── Flash Transition Check ──
+        if (CurrentLevelIndex == flashFromIndex && nextIndex == flashToIndex)
         {
             StartCoroutine(FlashTransitionCoroutine(nextIndex));
         }
@@ -173,13 +250,13 @@ public class GameManager : MonoBehaviour
     {
         if (isTransitioning) return;
 
-        if (buildIndex < 0 || buildIndex >= SceneManager.sceneCount)
+        if (buildIndex < 0 || buildIndex >= SceneManager.sceneCountInBuildSettings)
         {
             Debug.LogError($"[GameManager] Invalid build index: {buildIndex}");
             return;
         }
 
-        if (CurrentLevelIndex == 2 && buildIndex == 3)
+        if (CurrentLevelIndex == flashFromIndex && buildIndex == flashToIndex)
         {
             StartCoroutine(FlashTransitionCoroutine(buildIndex));
         }
@@ -190,27 +267,26 @@ public class GameManager : MonoBehaviour
     }
 
     // ──────────────────────────────────────────────────
-    // Level 3 → 4 White Flash Coroutine
+    // Flash Transition Coroutine
     // ──────────────────────────────────────────────────
     /// <summary>
-    /// 1. Instantiates a full-screen white UI Image on a dedicated Canvas.
-    /// 2. Fades alpha from 0 → 1 over flashFadeInDuration.
-    /// 3. Holds pure white for exactly flashHoldDuration (2.0s default).
-    /// 4. Loads the target scene.
-    /// 5. Fades alpha from 1 → 0 over flashFadeOutDuration.
-    /// 6. Destroys the overlay.
+    /// 1. Fades screen to pure white.
+    /// 2. Holds for flashHoldDuration (default 2.0s).
+    /// 3. Loads the target scene.
+    /// 4. Waits for DeferredSpawnTeleport to complete (via sceneLoaded).
+    /// 5. Fades white out.
     /// </summary>
     private IEnumerator FlashTransitionCoroutine(int targetSceneIndex)
     {
         isTransitioning = true;
 
-        // ── Ensure the flash overlay exists ──
+        // Ensure the flash overlay exists
         if (flashCanvas == null || flashImage == null)
         {
             CreateFlashOverlay();
         }
 
-        // ── Activate and reset ──
+        // Activate and reset
         flashCanvas.gameObject.SetActive(true);
         SetFlashAlpha(0f);
 
@@ -219,19 +295,19 @@ public class GameManager : MonoBehaviour
         while (elapsed < flashFadeInDuration)
         {
             elapsed += Time.unscaledDeltaTime;
-            float t = Mathf.Clamp01(elapsed / flashFadeInDuration);
-            SetFlashAlpha(t);
+            SetFlashAlpha(Mathf.Clamp01(elapsed / flashFadeInDuration));
             yield return null;
         }
         SetFlashAlpha(1f);
 
-        // ── Phase 2: Hold pure white for exactly 2.0 seconds ──
+        // ── Phase 2: Hold pure white ──
         yield return new WaitForSecondsRealtime(flashHoldDuration);
 
-        // ── Phase 3: Load the target scene while white ──
+        // ── Phase 3: Load the target scene (OnSceneLoaded handles spawn) ──
         SceneManager.LoadScene(targetSceneIndex);
 
-        // Wait one frame for the scene to initialise
+        // Wait TWO frames: one for sceneLoaded + DeferredSpawnTeleport to run
+        yield return null;
         yield return null;
 
         // ── Phase 4: Fade OUT from white ──
@@ -239,13 +315,12 @@ public class GameManager : MonoBehaviour
         while (elapsed < flashFadeOutDuration)
         {
             elapsed += Time.unscaledDeltaTime;
-            float t = Mathf.Clamp01(elapsed / flashFadeOutDuration);
-            SetFlashAlpha(1f - t);
+            SetFlashAlpha(1f - Mathf.Clamp01(elapsed / flashFadeOutDuration));
             yield return null;
         }
         SetFlashAlpha(0f);
 
-        // ── Cleanup ──
+        // Cleanup
         flashCanvas.gameObject.SetActive(false);
         isTransitioning = false;
     }
@@ -253,20 +328,15 @@ public class GameManager : MonoBehaviour
     // ──────────────────────────────────────────────────
     // Flash Overlay Construction
     // ──────────────────────────────────────────────────
-    /// <summary>
-    /// Programmatically creates a Screen Space – Overlay Canvas with a single
-    /// full-screen white Image. Parented under Core so it persists across scenes.
-    /// Starts hidden.
-    /// </summary>
     private void CreateFlashOverlay()
     {
-        // ── Canvas ──
+        // Canvas
         GameObject canvasObj = new GameObject("FlashCanvas");
         canvasObj.transform.SetParent(transform);
 
         flashCanvas = canvasObj.AddComponent<Canvas>();
         flashCanvas.renderMode = RenderMode.ScreenSpaceOverlay;
-        flashCanvas.sortingOrder = 999; // Always on top
+        flashCanvas.sortingOrder = 999;
 
         CanvasScaler scaler = canvasObj.AddComponent<CanvasScaler>();
         scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
@@ -274,25 +344,22 @@ public class GameManager : MonoBehaviour
 
         canvasObj.AddComponent<GraphicRaycaster>();
 
-        // ── Full-screen white Image ──
+        // Full-screen white Image
         GameObject imgObj = new GameObject("WhiteFlash");
         imgObj.transform.SetParent(canvasObj.transform, false);
 
         flashImage = imgObj.AddComponent<Image>();
-        flashImage.color = new Color(1f, 1f, 1f, 0f); // start transparent
+        flashImage.color = new Color(1f, 1f, 1f, 0f);
 
-        // Stretch to fill entire canvas
         RectTransform rt = flashImage.rectTransform;
         rt.anchorMin = Vector2.zero;
         rt.anchorMax = Vector2.one;
         rt.offsetMin = Vector2.zero;
         rt.offsetMax = Vector2.zero;
 
-        // ── Start hidden ──
         canvasObj.SetActive(false);
     }
 
-    /// <summary>Sets the flash overlay alpha (0 = invisible, 1 = pure white).</summary>
     private void SetFlashAlpha(float alpha)
     {
         if (flashImage != null)

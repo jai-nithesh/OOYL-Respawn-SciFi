@@ -178,18 +178,59 @@ public class PlayerController : MonoBehaviour
     // ──────────────────────────────────────────────────
     /// <summary>
     /// Instantiates the bullet prefab at the FirePoint with matching rotation.
+    /// Tags the bullet as "PlayerBullet" and uses Physics2D.IgnoreCollision
+    /// to prevent the bullet from hitting the player's own colliders.
     /// </summary>
     private void Fire()
     {
         if (bulletPrefab == null || firePoint == null) return;
         GameObject bullet = Instantiate(bulletPrefab, firePoint.position, firePoint.rotation);
 
-        // ── Tag the bullet so EnemyAI knows it's hostile and so it won't damage the player on ricochet ──
+        // Tag the bullet so EnemyAI knows it's hostile
         bullet.tag = "PlayerBullet";
-        RicochetBullet rb = bullet.GetComponent<RicochetBullet>();
-        if (rb != null)
+        int bLayer = LayerMask.NameToLayer("Bullet");
+        if (bLayer != -1) bullet.layer = bLayer;
+
+        // Set ownership on the RicochetBullet component
+        RicochetBullet ricochet = bullet.GetComponent<RicochetBullet>();
+        if (ricochet != null)
         {
-            rb.ownerTag = "Player";
+            ricochet.ownerTag = "Player";
+        }
+
+        // ── Physics2D.IgnoreCollision ──
+        // Prevent the bullet from colliding with ANY of the player's colliders
+        // (both the feet collider and the hitbox trigger child).
+        // This is instance-level: only THIS bullet ignores THIS player.
+        Collider2D[] myColliders = GetComponentsInChildren<Collider2D>();
+        Collider2D[] bulletColliders = bullet.GetComponentsInChildren<Collider2D>();
+        foreach (Collider2D mc in myColliders)
+        {
+            foreach (Collider2D bc in bulletColliders)
+            {
+                Physics2D.IgnoreCollision(mc, bc);
+            }
+        }
+    }
+
+    // ──────────────────────────────────────────────────
+    // Public API – Camera Reference Refresh
+    // ──────────────────────────────────────────────────
+    /// <summary>
+    /// Called by GameManager after a scene load to ensure the private mainCam
+    /// reference points to the correct persistent camera, not a destroyed one.
+    /// </summary>
+    /// <param name="cam">The persistent camera from the Core hierarchy.</param>
+    public void RefreshCameraReference(Camera cam)
+    {
+        if (cam != null)
+        {
+            mainCam = cam;
+        }
+        else
+        {
+            // Fallback: try Camera.main (should work if our camera is tagged MainCamera)
+            mainCam = Camera.main;
         }
     }
 }

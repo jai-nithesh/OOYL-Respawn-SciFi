@@ -13,7 +13,7 @@ GameObject:
   - component: {fileID: 7396548987238503756}
   - component: {fileID: 5039981154313545319}
   - component: {fileID: 3242447346738589108}
-  m_Layer: 0
+  m_Layer: 8
   m_Name: EnemyRicochetBullet
   m_TagString: EnemyBullet
   m_Icon: {fileID: 0}
@@ -170,8 +170,8 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: fb24a692f96735c44896e64df28612ba, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::RicochetBullet
-  speed: 5
+  speed: 3
   maxBounces: 2
   bounceTag: BounceWall
   ownerTag: Enemy
-  ignoreTags: []
+  hitboxLayerName: CharacterBody

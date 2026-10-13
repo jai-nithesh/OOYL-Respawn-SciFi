@@ -13,9 +13,9 @@ GameObject:
   - component: {fileID: 7396548987238503756}
   - component: {fileID: 5039981154313545319}
   - component: {fileID: 3242447346738589108}
-  m_Layer: 0
+  m_Layer: 8
   m_Name: RicochetBullet
-  m_TagString: PlayerBullet
+  m_TagString: Bullet
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
@@ -174,4 +174,4 @@ MonoBehaviour:
   maxBounces: 2
   bounceTag: BounceWall
   ownerTag: Player
-  ignoreTags: []
+  hitboxLayerName: CharacterBody
