@@ -15,6 +15,17 @@ public class RicochetBullet : MonoBehaviour
     [Tooltip("Tag used to identify what surfaces trigger the reflection math.")]
     public string bounceTag = "BounceWall";
 
+    // ───────── Ownership & Tagging ─────────
+    [Header("Ownership")]
+    [Tooltip("Tag of the entity that fired this bullet (e.g., 'Player' or 'Enemy'). " +
+             "The bullet will ignore collisions with GameObjects that have this tag, " +
+             "preventing self-damage from ricochets.")]
+    public string ownerTag = "";
+
+    [Tooltip("Tags to completely ignore on collision (bullet passes through). " +
+             "Useful for preventing bullet-on-bullet collisions.")]
+    public string[] ignoreTags = new string[0];
+
     // ───────── Private State ─────────
     private Rigidbody2D rb;
     private int currentBounces = 0;
@@ -35,6 +46,10 @@ public class RicochetBullet : MonoBehaviour
         // We set the initial velocity straight forward along the local right axis (X-axis).
         currentVelocity = transform.right * speed;
         rb.linearVelocity = currentVelocity;
+
+        // ── Auto-destroy safety net ──
+        // Destroy after 8 seconds to prevent orphaned bullets from living forever
+        Destroy(gameObject, 8f);
     }
 
     private void FixedUpdate()
@@ -50,6 +65,21 @@ public class RicochetBullet : MonoBehaviour
     // ──────────────────────────────────────────────────
     private void OnCollisionEnter2D(Collision2D collision)
     {
+        // ── Ignore the entity that fired this bullet (prevents ricochet self-damage) ──
+        if (!string.IsNullOrEmpty(ownerTag) && collision.gameObject.CompareTag(ownerTag))
+        {
+            return;
+        }
+
+        // ── Ignore any tags in the ignore list (e.g., other bullets) ──
+        for (int i = 0; i < ignoreTags.Length; i++)
+        {
+            if (collision.gameObject.CompareTag(ignoreTags[i]))
+            {
+                return;
+            }
+        }
+
         // Check if the object we collided with is part of our designated geometric arena
         if (collision.gameObject.CompareTag(bounceTag))
         {
@@ -84,7 +114,7 @@ public class RicochetBullet : MonoBehaviour
         else
         {
             // If the bullet hits an enemy, a shield, or anything not tagged as a wall, destroy it.
-            // Note: We will add enemy damage logic here shortly.
+            // Damage is handled by the target's OnCollisionEnter2D (e.g., EnemyAI.cs).
             Destroy(gameObject);
         }
     }

@@ -182,6 +182,14 @@ public class PlayerController : MonoBehaviour
     private void Fire()
     {
         if (bulletPrefab == null || firePoint == null) return;
-        Instantiate(bulletPrefab, firePoint.position, firePoint.rotation);
+        GameObject bullet = Instantiate(bulletPrefab, firePoint.position, firePoint.rotation);
+
+        // ── Tag the bullet so EnemyAI knows it's hostile and so it won't damage the player on ricochet ──
+        bullet.tag = "PlayerBullet";
+        RicochetBullet rb = bullet.GetComponent<RicochetBullet>();
+        if (rb != null)
+        {
+            rb.ownerTag = "Player";
+        }
     }
 }

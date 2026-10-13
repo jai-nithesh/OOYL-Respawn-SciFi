@@ -5,6 +5,9 @@ TagManager:
   serializedVersion: 3
   tags:
   - BounceWall
+  - SpawnPoint
+  - EnemyBullet
+  - PlayerBullet
   layers:
   - Default
   - TransparentFX
