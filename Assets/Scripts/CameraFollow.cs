@@ -4,6 +4,9 @@ using UnityEngine;
 /// Smooth, jitter-free camera follow using Vector3.SmoothDamp in LateUpdate.
 /// Locks onto the target's X/Y while preserving the camera's Z depth.
 /// Uses Time.unscaledDeltaTime so it stays smooth during Sandevistan slow-mo.
+///
+/// ADD-ON: Static Shake() method for trauma-based camera shake that works
+/// correctly during time dilation (uses unscaledDeltaTime).
 /// </summary>
 public class CameraFollow : MonoBehaviour
 {
@@ -18,8 +21,26 @@ public class CameraFollow : MonoBehaviour
     [Tooltip("Offset from the target position (useful for look-ahead).")]
     public Vector3 offset = Vector3.zero;
 
+    // ───────── Singleton-like static ref ─────────
+    private static CameraFollow instance;
+
     // ───────── Private State ─────────
     private Vector3 velocity = Vector3.zero;
+
+    // ───────── Shake State ─────────
+    private float shakeDuration = 0f;
+    private float shakeMagnitude = 0f;
+    private float shakeElapsed = 0f;
+
+    private void Awake()
+    {
+        instance = this;
+    }
+
+    private void OnDestroy()
+    {
+        if (instance == this) instance = null;
+    }
 
     // ──────────────────────────────────────────────────
     // LateUpdate – runs after all Update() calls,
@@ -47,5 +68,41 @@ public class CameraFollow : MonoBehaviour
             Mathf.Infinity,
             Time.unscaledDeltaTime
         );
+
+        // ── Apply Shake Offset ──
+        if (shakeElapsed < shakeDuration)
+        {
+            shakeElapsed += Time.unscaledDeltaTime;
+            float progress = shakeElapsed / shakeDuration;
+            float dampedMagnitude = shakeMagnitude * (1f - progress); // Linear falloff
+
+            Vector2 shakeOffset = Random.insideUnitCircle * dampedMagnitude;
+            transform.position += new Vector3(shakeOffset.x, shakeOffset.y, 0f);
+        }
+    }
+
+    // ──────────────────────────────────────────────────
+    // Public Static API – Camera Shake
+    // ──────────────────────────────────────────────────
+    /// <summary>
+    /// Triggers a camera shake. Uses unscaledDeltaTime so it works perfectly
+    /// during Sandevistan time dilation.
+    /// </summary>
+    /// <param name="duration">Duration of the shake in real seconds.</param>
+    /// <param name="magnitude">Maximum displacement in world units.</param>
+    public static void Shake(float duration, float magnitude)
+    {
+        if (instance == null) return;
+
+        // If a stronger shake is already running, only override if this one is stronger
+        if (instance.shakeElapsed < instance.shakeDuration &&
+            magnitude < instance.shakeMagnitude)
+        {
+            return;
+        }
+
+        instance.shakeDuration = duration;
+        instance.shakeMagnitude = magnitude;
+        instance.shakeElapsed = 0f;
     }
 }

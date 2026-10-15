@@ -127,6 +127,12 @@ public class TimeDilation : MonoBehaviour
         float elapsed = 0f;
         while (elapsed < duration)
         {
+            // Safety: if player died mid-Sandevistan, abort and restore time
+            if (playerController != null && playerController.IsDead)
+            {
+                break;
+            }
+
             SpawnGhost();
 
             // Wait in REAL time (not affected by timeScale)

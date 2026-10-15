@@ -2,6 +2,7 @@ using System.Collections;
 using UnityEngine;
 using UnityEngine.SceneManagement;
 using UnityEngine.UI;
+using TMPro;
 
 /// <summary>
 /// GameManager – Bulletproof Persistent Singleton.
@@ -12,16 +13,7 @@ using UnityEngine.UI;
 ///   Teleports the player to the scene's "SpawnPoint" after every load.
 ///   Destroys rogue cameras from newly loaded scenes to prevent conflicts.
 ///   Plays a configurable white-flash Coroutine for special transitions.
-///
-/// CRITICAL FIXES (v2):
-///   • Strict singleton: duplicate's OnEnable is blocked via enabled=false so
-///     it never double-subscribes to sceneLoaded.
-///   • Deferred spawn: teleport waits one rendered frame so all scene objects
-///     (SpawnPoint) are guaranteed active and findable.
-///   • Rogue camera cleanup: any extra "MainCamera"-tagged cameras from new
-///     scenes are destroyed on load.
-///   • PlayerController camera reference is refreshed after every scene load.
-///   • Flash transition indices are Inspector-configurable (not hardcoded).
+///   Manages persistent HUD (health bar), Death Screen, Win Screen, Boss Health Bar.
 /// ──────────────────────────────────────────────────────────────────────────────
 /// </summary>
 public class GameManager : MonoBehaviour
@@ -39,6 +31,35 @@ public class GameManager : MonoBehaviour
 
     [Tooltip("The persistent Main Camera (child of Core). Used to destroy rogue cameras.")]
     public Camera persistentCamera;
+
+    // ───────── Hero Health UI ─────────
+    [Header("Hero Health UI")]
+    [Tooltip("The fill Image for the hero health bar (Image.type = Filled, Horizontal).")]
+    public Image healthBarFill;
+
+    [Tooltip("TMP text showing HP: X / MAX.")]
+    public TextMeshProUGUI healthText;
+
+    // ───────── Boss Health UI ─────────
+    [Header("Boss Health UI (Optional)")]
+    [Tooltip("Parent panel of the boss health bar (hidden when no boss).")]
+    public GameObject bossHealthPanel;
+
+    [Tooltip("The fill Image for the boss health bar.")]
+    public Image bossHealthBarFill;
+
+    [Tooltip("TMP text showing boss HP or name.")]
+    public TextMeshProUGUI bossHealthText;
+
+    // ───────── Death Screen ─────────
+    [Header("Death Screen")]
+    [Tooltip("The Death Screen panel inside UICanvas. Set inactive by default.")]
+    public GameObject deathPanel;
+
+    // ───────── Win Screen ─────────
+    [Header("Win Screen")]
+    [Tooltip("The Win Screen panel inside UICanvas. Set inactive by default.")]
+    public GameObject winPanel;
 
     // ───────── Flash Effect Settings ─────────
     [Header("Flash Transition")]
@@ -65,6 +86,7 @@ public class GameManager : MonoBehaviour
     private bool isTransitioning = false;
     private Canvas flashCanvas;
     private Image flashImage;
+    private PlayerController playerController;
 
     // ──────────────────────────────────────────────────
     // Lifecycle
@@ -92,8 +114,31 @@ public class GameManager : MonoBehaviour
             persistentCamera = cameraFollow.GetComponent<Camera>();
         }
 
+        // Cache player controller
+        if (playerTransform != null)
+        {
+            playerController = playerTransform.GetComponent<PlayerController>();
+        }
+
+        // Subscribe to health events
+        if (playerController != null)
+        {
+            playerController.OnHealthChanged += UpdateHealthUI;
+        }
+
         // Pre-build the flash overlay (hidden by default)
         CreateFlashOverlay();
+
+        // Initialize UI states
+        if (deathPanel != null) deathPanel.SetActive(false);
+        if (winPanel != null) winPanel.SetActive(false);
+        if (bossHealthPanel != null) bossHealthPanel.SetActive(false);
+
+        // Initialize health HUD
+        if (playerController != null)
+        {
+            UpdateHealthUI(playerController.CurrentHealth, playerController.MaxHealth);
+        }
     }
 
     private void OnEnable()
@@ -106,6 +151,12 @@ public class GameManager : MonoBehaviour
     private void OnDisable()
     {
         SceneManager.sceneLoaded -= OnSceneLoaded;
+
+        // Unsubscribe from health events
+        if (playerController != null)
+        {
+            playerController.OnHealthChanged -= UpdateHealthUI;
+        }
     }
 
     private void OnDestroy()
@@ -125,24 +176,20 @@ public class GameManager : MonoBehaviour
         CurrentLevelIndex = scene.buildIndex;
 
         // ── Kill rogue cameras ──
-        // New scenes created from Unity's template include a Main Camera.
-        // If left alive, two cameras render simultaneously and Camera.main
-        // returns the wrong one, breaking PlayerController's Atan2 aiming.
         DestroyRogueCameras();
 
+        // ── Hide boss health bar on scene load (boss scenes will re-show it) ──
+        HideBossHealthUI();
+
         // ── Deferred spawn teleport ──
-        // Wait one rendered frame so every scene object (including SpawnPoint)
-        // is guaranteed to be Awake, Start-ed, and active.
         StartCoroutine(DeferredSpawnTeleport());
     }
 
     /// <summary>
     /// Waits one frame, then finds "SpawnPoint" and teleports the player there.
-    /// This guarantees all scene objects are fully initialised before we search.
     /// </summary>
     private IEnumerator DeferredSpawnTeleport()
     {
-        // Wait until the end of the frame so all Awake/Start calls have finished
         yield return null;
 
         if (playerTransform == null)
@@ -183,20 +230,24 @@ public class GameManager : MonoBehaviour
         }
 
         // ── Refresh PlayerController's camera reference ──
-        PlayerController pc = playerTransform.GetComponent<PlayerController>();
-        if (pc != null)
+        if (playerController == null && playerTransform != null)
         {
-            pc.RefreshCameraReference(persistentCamera);
+            playerController = playerTransform.GetComponent<PlayerController>();
+            if (playerController != null)
+            {
+                playerController.OnHealthChanged += UpdateHealthUI;
+            }
+        }
+
+        if (playerController != null)
+        {
+            playerController.RefreshCameraReference(persistentCamera);
         }
     }
 
     // ──────────────────────────────────────────────────
     // Rogue Camera Cleanup
     // ──────────────────────────────────────────────────
-    /// <summary>
-    /// Finds all cameras tagged "MainCamera" and destroys any that are NOT
-    /// our persistent camera. Prevents dual-rendering and Camera.main conflicts.
-    /// </summary>
     private void DestroyRogueCameras()
     {
         if (persistentCamera == null) return;
@@ -214,11 +265,153 @@ public class GameManager : MonoBehaviour
     }
 
     // ──────────────────────────────────────────────────
+    // Hero Health UI
+    // ──────────────────────────────────────────────────
+    /// <summary>
+    /// Updates the persistent health bar and text. Bound to PlayerController.OnHealthChanged.
+    /// </summary>
+    public void UpdateHealthUI(int current, int max)
+    {
+        if (healthBarFill != null)
+        {
+            healthBarFill.fillAmount = (max > 0) ? (float)current / max : 0f;
+        }
+
+        if (healthText != null)
+        {
+            healthText.text = $"HP: {current} / {max}";
+        }
+    }
+
+    // ──────────────────────────────────────────────────
+    // Boss Health UI
+    // ──────────────────────────────────────────────────
+    /// <summary>Shows and updates the boss health bar.</summary>
+    public void UpdateBossHealthUI(int current, int max, string bossName = "THE DARK WARLORD")
+    {
+        if (bossHealthPanel != null && !bossHealthPanel.activeSelf)
+        {
+            bossHealthPanel.SetActive(true);
+        }
+
+        if (bossHealthBarFill != null)
+        {
+            bossHealthBarFill.fillAmount = (max > 0) ? (float)current / max : 0f;
+        }
+
+        if (bossHealthText != null)
+        {
+            bossHealthText.text = $"{bossName}  {current} / {max}";
+        }
+    }
+
+    /// <summary>Hides the boss health bar.</summary>
+    public void HideBossHealthUI()
+    {
+        if (bossHealthPanel != null)
+        {
+            bossHealthPanel.SetActive(false);
+        }
+    }
+
+    // ──────────────────────────────────────────────────
+    // Death Screen
+    // ──────────────────────────────────────────────────
+    /// <summary>
+    /// Called by PlayerController when health reaches zero.
+    /// Resets time, disables controls, and shows the death panel.
+    /// </summary>
+    public void TriggerDeathScreen()
+    {
+        // Ensure time is normal so UI is interactive
+        Time.timeScale = 1f;
+        Time.fixedDeltaTime = 0.02f;
+
+        if (playerController != null)
+        {
+            playerController.DisableControls();
+        }
+
+        if (deathPanel != null)
+        {
+            deathPanel.SetActive(true);
+        }
+    }
+
+    /// <summary>
+    /// Button callback: Retry the current level.
+    /// </summary>
+    public void RetryCurrentLevel()
+    {
+        if (deathPanel != null) deathPanel.SetActive(false);
+        if (winPanel != null) winPanel.SetActive(false);
+
+        if (playerController != null)
+        {
+            playerController.ResetPlayerState();
+        }
+
+        int sceneIndex = SceneManager.GetActiveScene().buildIndex;
+        SceneManager.LoadScene(sceneIndex);
+    }
+
+    /// <summary>
+    /// Button callback: Restart the game from Level 1 (build index 1).
+    /// </summary>
+    public void RestartFromBeginning()
+    {
+        if (deathPanel != null) deathPanel.SetActive(false);
+        if (winPanel != null) winPanel.SetActive(false);
+
+        if (playerController != null)
+        {
+            playerController.ResetPlayerState();
+        }
+
+        // Level 1 is build index 1 (index 0 is Intro)
+        SceneManager.LoadScene(1);
+    }
+
+    // ──────────────────────────────────────────────────
+    // Win Screen
+    // ──────────────────────────────────────────────────
+    /// <summary>
+    /// Called by PrincessController when the victory sequence completes.
+    /// </summary>
+    public void TriggerWinScreen()
+    {
+        Time.timeScale = 1f;
+        Time.fixedDeltaTime = 0.02f;
+
+        if (playerController != null)
+        {
+            playerController.DisableControls();
+        }
+
+        if (winPanel != null)
+        {
+            winPanel.SetActive(true);
+        }
+    }
+
+    /// <summary>
+    /// Button callback: Quit the game.
+    /// </summary>
+    public void QuitGame()
+    {
+#if UNITY_EDITOR
+        Debug.Log("[GameManager] QuitGame() called — stopping play mode in Editor.");
+        UnityEditor.EditorApplication.isPlaying = false;
+#else
+        Application.Quit();
+#endif
+    }
+
+    // ──────────────────────────────────────────────────
     // Public API – Level Loading
     // ──────────────────────────────────────────────────
     /// <summary>
     /// Loads the next scene in the Build Index.
-    /// If transitioning from flashFromIndex → flashToIndex, plays the white flash.
     /// </summary>
     public void LoadNextLevel()
     {
@@ -269,24 +462,15 @@ public class GameManager : MonoBehaviour
     // ──────────────────────────────────────────────────
     // Flash Transition Coroutine
     // ──────────────────────────────────────────────────
-    /// <summary>
-    /// 1. Fades screen to pure white.
-    /// 2. Holds for flashHoldDuration (default 2.0s).
-    /// 3. Loads the target scene.
-    /// 4. Waits for DeferredSpawnTeleport to complete (via sceneLoaded).
-    /// 5. Fades white out.
-    /// </summary>
     private IEnumerator FlashTransitionCoroutine(int targetSceneIndex)
     {
         isTransitioning = true;
 
-        // Ensure the flash overlay exists
         if (flashCanvas == null || flashImage == null)
         {
             CreateFlashOverlay();
         }
 
-        // Activate and reset
         flashCanvas.gameObject.SetActive(true);
         SetFlashAlpha(0f);
 
@@ -303,10 +487,9 @@ public class GameManager : MonoBehaviour
         // ── Phase 2: Hold pure white ──
         yield return new WaitForSecondsRealtime(flashHoldDuration);
 
-        // ── Phase 3: Load the target scene (OnSceneLoaded handles spawn) ──
+        // ── Phase 3: Load the target scene ──
         SceneManager.LoadScene(targetSceneIndex);
 
-        // Wait TWO frames: one for sceneLoaded + DeferredSpawnTeleport to run
         yield return null;
         yield return null;
 
@@ -320,7 +503,6 @@ public class GameManager : MonoBehaviour
         }
         SetFlashAlpha(0f);
 
-        // Cleanup
         flashCanvas.gameObject.SetActive(false);
         isTransitioning = false;
     }
@@ -330,7 +512,6 @@ public class GameManager : MonoBehaviour
     // ──────────────────────────────────────────────────
     private void CreateFlashOverlay()
     {
-        // Canvas
         GameObject canvasObj = new GameObject("FlashCanvas");
         canvasObj.transform.SetParent(transform);
 
@@ -344,7 +525,6 @@ public class GameManager : MonoBehaviour
 
         canvasObj.AddComponent<GraphicRaycaster>();
 
-        // Full-screen white Image
         GameObject imgObj = new GameObject("WhiteFlash");
         imgObj.transform.SetParent(canvasObj.transform, false);
 

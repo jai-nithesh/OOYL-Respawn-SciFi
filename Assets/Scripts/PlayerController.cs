@@ -1,3 +1,5 @@
+using System;
+using System.Collections;
 using UnityEngine;
 using UnityEngine.InputSystem;
 
@@ -29,13 +31,47 @@ public class PlayerController : MonoBehaviour
     [Tooltip("When true the player moves at real-world speed regardless of Time.timeScale.")]
     public bool useUnscaledTime = false;
 
+    // ───────── Health System ─────────
+    [Header("Health")]
+    [Tooltip("Maximum hit points.")]
+    public int maxHealth = 10;
+
+    [Tooltip("Seconds of invulnerability after taking a hit.")]
+    public float iFrameDuration = 0.5f;
+
+    [Tooltip("Color tint during the damage flash.")]
+    public Color damageFlashColor = Color.red;
+
+    [Tooltip("Duration of each flash half-cycle in real seconds.")]
+    public float flashCycleDuration = 0.08f;
+
+    // ───────── Events ─────────
+    /// <summary>Raised whenever health changes. Args: (currentHealth, maxHealth).</summary>
+    public event Action<int, int> OnHealthChanged;
+
     // ───────── Private State ─────────
     private Rigidbody2D rb;
     private Camera mainCam;
     private Animator anim;
+    private SpriteRenderer spriteRenderer;
     private Vector2 moveInput;
     private Vector2 lastMoveDirection;
     private float nextFireTime;
+
+    // Health
+    private int currentHealth;
+    private bool isInvulnerable = false;
+    private bool isDead = false;
+
+    // Controls gate – when false, no movement/aim/fire
+    private bool controlsEnabled = true;
+
+    // ──────────────────────────────────────────────────
+    // Public API – Properties
+    // ──────────────────────────────────────────────────
+    public int CurrentHealth => currentHealth;
+    public int MaxHealth => maxHealth;
+    public bool IsDead => isDead;
 
     // ──────────────────────────────────────────────────
     // Lifecycle
@@ -45,6 +81,9 @@ public class PlayerController : MonoBehaviour
         rb = GetComponent<Rigidbody2D>();
         mainCam = Camera.main;
         anim = GetComponent<Animator>();
+        spriteRenderer = GetComponent<SpriteRenderer>();
+
+        currentHealth = maxHealth;
 
         // Set a default facing direction (down) so the blend tree has an initial state
         lastMoveDirection = new Vector2(0f, -1f);
@@ -52,6 +91,14 @@ public class PlayerController : MonoBehaviour
 
     private void Update()
     {
+        // ── Dead or controls disabled: zero input ──
+        if (isDead || !controlsEnabled)
+        {
+            moveInput = Vector2.zero;
+            UpdateAnimations();
+            return;
+        }
+
         // ── Gather raw WASD / arrow-key input using the new Input System ──
         float h = 0f;
         float v = 0f;
@@ -100,6 +147,12 @@ public class PlayerController : MonoBehaviour
     private void FixedUpdate()
     {
         // ── Apply movement via Rigidbody2D ──
+        if (isDead || !controlsEnabled)
+        {
+            rb.linearVelocity = Vector2.zero;
+            return;
+        }
+
         // When time is dilated we compensate so the player keeps real-world speed.
         if (useUnscaledTime)
         {
@@ -199,9 +252,6 @@ public class PlayerController : MonoBehaviour
         }
 
         // ── Physics2D.IgnoreCollision ──
-        // Prevent the bullet from colliding with ANY of the player's colliders
-        // (both the feet collider and the hitbox trigger child).
-        // This is instance-level: only THIS bullet ignores THIS player.
         Collider2D[] myColliders = GetComponentsInChildren<Collider2D>();
         Collider2D[] bulletColliders = bullet.GetComponentsInChildren<Collider2D>();
         foreach (Collider2D mc in myColliders)
@@ -211,11 +261,153 @@ public class PlayerController : MonoBehaviour
                 Physics2D.IgnoreCollision(mc, bc);
             }
         }
+
+        // ── Camera Shake: Tiny kick on fire ──
+        CameraFollow.Shake(0.06f, 0.08f);
     }
 
     // ──────────────────────────────────────────────────
-    // Public API – Camera Reference Refresh
+    // Health & Damage System
     // ──────────────────────────────────────────────────
+    /// <summary>
+    /// Deals damage to the player. Respects invulnerability frames.
+    /// Uses WaitForSecondsRealtime so the flash never freezes during Sandevistan.
+    /// </summary>
+    public void TakeDamage(int damage)
+    {
+        if (isDead || isInvulnerable) return;
+
+        currentHealth -= damage;
+        currentHealth = Mathf.Max(currentHealth, 0);
+
+        Debug.Log($"[Player] Took {damage} damage. Health: {currentHealth}/{maxHealth}");
+
+        // ── Camera Shake: Strong jolt on damage ──
+        CameraFollow.Shake(0.2f, 0.35f);
+
+        OnHealthChanged?.Invoke(currentHealth, maxHealth);
+
+        if (currentHealth <= 0)
+        {
+            Die();
+            return;
+        }
+
+        // Start iFrame + flash
+        StartCoroutine(InvulnerabilityCoroutine());
+    }
+
+    /// <summary>
+    /// Brief invulnerability + SpriteRenderer damage flash using real time.
+    /// </summary>
+    private IEnumerator InvulnerabilityCoroutine()
+    {
+        isInvulnerable = true;
+
+        Color originalColor = spriteRenderer != null ? spriteRenderer.color : Color.white;
+        float elapsed = 0f;
+        bool flashOn = false;
+
+        while (elapsed < iFrameDuration)
+        {
+            if (spriteRenderer != null)
+            {
+                flashOn = !flashOn;
+                spriteRenderer.color = flashOn ? damageFlashColor : originalColor;
+            }
+            yield return new WaitForSecondsRealtime(flashCycleDuration);
+            elapsed += flashCycleDuration;
+        }
+
+        // Restore original color
+        if (spriteRenderer != null)
+        {
+            spriteRenderer.color = originalColor;
+        }
+
+        isInvulnerable = false;
+    }
+
+    /// <summary>
+    /// Called when health reaches zero. Disables controls and notifies GameManager.
+    /// </summary>
+    private void Die()
+    {
+        isDead = true;
+        controlsEnabled = false;
+
+        // Reset Sandevistan / time dilation immediately
+        Time.timeScale = 1f;
+        Time.fixedDeltaTime = 0.02f;
+        useUnscaledTime = false;
+
+        // Zero velocity
+        if (rb != null)
+        {
+            rb.linearVelocity = Vector2.zero;
+        }
+
+        Debug.Log("[Player] DEAD — triggering death screen.");
+
+        // Notify GameManager
+        if (GameManager.Instance != null)
+        {
+            GameManager.Instance.TriggerDeathScreen();
+        }
+    }
+
+    // ──────────────────────────────────────────────────
+    // Public API – State Management
+    // ──────────────────────────────────────────────────
+    /// <summary>
+    /// Fully restores the player: health, controls, velocity, and time scale.
+    /// Called by GameManager on retry/restart.
+    /// </summary>
+    public void ResetPlayerState()
+    {
+        currentHealth = maxHealth;
+        isDead = false;
+        isInvulnerable = false;
+        controlsEnabled = true;
+        useUnscaledTime = false;
+
+        // Reset time
+        Time.timeScale = 1f;
+        Time.fixedDeltaTime = 0.02f;
+
+        // Zero velocity
+        if (rb != null)
+        {
+            rb.linearVelocity = Vector2.zero;
+            rb.angularVelocity = 0f;
+        }
+
+        // Restore sprite color
+        if (spriteRenderer != null)
+        {
+            spriteRenderer.color = Color.white;
+        }
+
+        // Stop all coroutines (clears any active flash)
+        StopAllCoroutines();
+
+        OnHealthChanged?.Invoke(currentHealth, maxHealth);
+    }
+
+    /// <summary>Disables all player combat inputs (movement, aiming, firing).</summary>
+    public void DisableControls()
+    {
+        controlsEnabled = false;
+        moveInput = Vector2.zero;
+        if (rb != null) rb.linearVelocity = Vector2.zero;
+    }
+
+    /// <summary>Re-enables player combat inputs.</summary>
+    public void EnableControls()
+    {
+        controlsEnabled = true;
+    }
+
     /// <summary>
     /// Called by GameManager after a scene load to ensure the private mainCam
     /// reference points to the correct persistent camera, not a destroyed one.
