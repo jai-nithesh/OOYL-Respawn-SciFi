@@ -11,6 +11,7 @@ TagManager:
   - CharacterBody
   - CharacterFeet
   - Bullet
+  - Enemy
   layers:
   - Default
   - TransparentFX
