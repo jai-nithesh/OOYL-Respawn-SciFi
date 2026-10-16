@@ -129,6 +129,8 @@ public class EnemyAI : MonoBehaviour
         {
             Debug.LogWarning($"[EnemyAI] No GameObject tagged '{playerTag}' found in scene.");
         }
+
+        nextFireTime = Time.time + fireRate;
     }
 
     private void Update()
@@ -167,10 +169,10 @@ public class EnemyAI : MonoBehaviour
         {
             AimWeaponPivotAtPlayer();
 
-            if (Time.unscaledTime >= nextFireTime)
+            if (Time.time >= nextFireTime)
             {
                 Fire();
-                nextFireTime = Time.unscaledTime + fireRate;
+                nextFireTime = Time.time + fireRate;
             }
         }
 

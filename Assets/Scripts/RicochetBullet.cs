@@ -59,22 +59,34 @@ public class RicochetBullet : MonoBehaviour
     public int damage = 1;
 
     // ───────── Trick-Shot Settings ─────────
-    [Header("Trick-Shot Bonus")]
+    [Header("Trick-Shot Settings (Tweakable)")]
     [Tooltip("Extra damage per bounce (only for PlayerBullet).")]
     public int bonusDamagePerBounce = 1;
 
     [Tooltip("Speed multiplier per bounce.")]
-    public float speedMultiplierPerBounce = 1.12f;
+    public float speedMultiplierPerBounce = 1.08f;
 
-    [Tooltip("Scale multiplier per bounce.")]
-    public float scaleMultiplierPerBounce = 1.15f;
+    [Tooltip("Scale multiplier per bounce (1.0 = no scale change).")]
+    public float scaleMultiplierPerBounce = 1.02f;
 
-    // Bounce color tiers
-    [Tooltip("Color after 1 bounce (Gold).")]
-    public Color bounce1Color = new Color(1f, 0.85f, 0f, 1f); // Bright Gold
+    // ───────── Visual & Color Styling ─────────
+    [Header("Visual & Color Styling (Tweakable)")]
+    [Tooltip("Base bullet color with alpha transparency (sleek translucent cyan).")]
+    public Color baseColor = new Color(0.2f, 0.85f, 1f, 0.75f);
 
-    [Tooltip("Color after 2+ bounces (Neon Magenta).")]
-    public Color bounce2PlusColor = new Color(1f, 0f, 0.8f, 1f); // Neon Magenta/Purple
+    [Tooltip("Subtle color accent on bounce (no garish hue change).")]
+    public Color bounceColor = new Color(0.35f, 0.95f, 1f, 0.88f);
+
+    // ───────── Camera Shake & Effects ─────────
+    [Header("Shake & Visual Effects (Tweakable)")]
+    [Tooltip("Camera shake duration on bounce.")]
+    public float bounceShakeDuration = 0.04f;
+
+    [Tooltip("Camera shake magnitude on bounce. Set to 0 to disable.")]
+    public float bounceShakeMagnitude = 0.02f;
+
+    [Tooltip("Show floating text callouts on ricochet hits?")]
+    public bool showRicochetCallouts = false;
 
     // ───────── Hitbox Layer ─────────
     [Header("Hitbox Detection")]
@@ -108,6 +120,18 @@ public class RicochetBullet : MonoBehaviour
                              "OnTriggerEnter2D hitbox detection will not work. " +
                              "Create the layer in Project Settings → Tags and Layers.");
         }
+
+        // Apply professional translucent base styling
+        if (bulletSR != null)
+        {
+            bulletSR.color = baseColor;
+        }
+
+        if (bulletTrail != null)
+        {
+            bulletTrail.startColor = baseColor;
+            bulletTrail.endColor = new Color(baseColor.r, baseColor.g, baseColor.b, 0f);
+        }
     }
 
     private void Start()
@@ -119,16 +143,37 @@ public class RicochetBullet : MonoBehaviour
         // Check if this is a player bullet (for trick-shot bonuses)
         isPlayerBullet = CompareTag("PlayerBullet");
 
+        // Apply translucent styling
+        if (bulletSR != null)
+        {
+            bulletSR.color = baseColor;
+        }
+
         // ── Auto-destroy safety net ──
         Destroy(gameObject, 8f);
     }
 
     private void FixedUpdate()
     {
-        // ── Enforce Constant Velocity ──
-        // Forcibly maintain velocity to prevent physics friction/drag from degrading
-        // the mathematical perfection of the bounce trajectory.
-        rb.linearVelocity = currentVelocity;
+        // ── Enforce Constant Velocity & Anti-Stuck Watchdog ──
+        if (currentVelocity.sqrMagnitude < 0.1f)
+        {
+            currentVelocity = transform.right * speed;
+        }
+
+        // ── Time Dilation Matrix Effect ──
+        // When Time Dilation is active (Time.timeScale < 1):
+        // Player bullets compensate so they travel at full real-time speed.
+        // Enemy bullets travel at the dilated timeScale (slow-motion 25%), so the player can weave between them!
+        if (isPlayerBullet && Time.timeScale < 0.99f && Time.timeScale > 0.01f)
+        {
+            float bulletComp = 1f / Time.timeScale;
+            rb.linearVelocity = currentVelocity * bulletComp;
+        }
+        else
+        {
+            rb.linearVelocity = currentVelocity;
+        }
     }
 
     // ──────────────────────────────────────────────────
@@ -155,12 +200,26 @@ public class RicochetBullet : MonoBehaviour
                 return;
             }
 
+            if (collision.contactCount == 0) return;
+
             currentBounces++;
 
             // Vector Reflection Math
-            ContactPoint2D contact = collision.contacts[0];
+            ContactPoint2D contact = collision.GetContact(0);
             Vector2 surfaceNormal = contact.normal;
-            currentVelocity = Vector2.Reflect(currentVelocity, surfaceNormal);
+            if (surfaceNormal.sqrMagnitude < 0.001f)
+            {
+                surfaceNormal = -currentVelocity.normalized;
+            }
+
+            // Reflect direction and preserve full projectile speed
+            Vector2 reflectedDir = Vector2.Reflect(currentVelocity.normalized, surfaceNormal).normalized;
+            currentVelocity = reflectedDir * speed;
+
+            // ── Anti-Stuck Nudge ──
+            // Nudge position along the surface normal so the collider never gets stuck inside the wall
+            transform.position += (Vector3)(surfaceNormal * 0.08f);
+            rb.position = transform.position;
 
             // ── Trick-Shot Bonus (PlayerBullet only) ──
             if (isPlayerBullet)
@@ -168,18 +227,22 @@ public class RicochetBullet : MonoBehaviour
                 // Increase damage
                 damage += bonusDamagePerBounce;
 
-                // Increase speed
-                float newSpeed = currentVelocity.magnitude * speedMultiplierPerBounce;
-                currentVelocity = currentVelocity.normalized * newSpeed;
+                // Subtle speed multiplier
+                float newSpeed = speed * speedMultiplierPerBounce;
+                speed = newSpeed;
+                currentVelocity = reflectedDir * speed;
 
-                // Scale up the bullet
+                // Subtle scale pulse
                 transform.localScale *= scaleMultiplierPerBounce;
 
-                // Color shift
+                // Sleek, elegant color shift (maintains translucent cyber look)
                 ApplyBounceColor();
 
-                // Camera shake on bounce
-                CameraFollow.Shake(0.08f, 0.06f);
+                // Camera shake on bounce (tweakable, low by default)
+                if (bounceShakeMagnitude > 0f && bounceShakeDuration > 0f)
+                {
+                    CameraFollow.Shake(bounceShakeDuration, bounceShakeMagnitude);
+                }
             }
 
             rb.linearVelocity = currentVelocity;
@@ -240,7 +303,7 @@ public class RicochetBullet : MonoBehaviour
         //    We only handle visual callouts and self-destruction here. ──
 
         // Show trick-shot callout if this bullet bounced at least once
-        if (currentBounces >= 1)
+        if (currentBounces >= 1 && showRicochetCallouts)
         {
             // Check if we hit an enemy or boss for the callout
             EnemyAI enemy = other.GetComponentInParent<EnemyAI>();
@@ -248,7 +311,10 @@ public class RicochetBullet : MonoBehaviour
             if (enemy != null || boss != null)
             {
                 ShowRicochetCallout(other.gameObject);
-                CameraFollow.Shake(0.12f, 0.15f); // Trick-shot impact shake
+                if (bounceShakeMagnitude > 0f)
+                {
+                    CameraFollow.Shake(bounceShakeDuration, bounceShakeMagnitude * 1.5f);
+                }
             }
         }
 
@@ -271,7 +337,7 @@ public class RicochetBullet : MonoBehaviour
     /// </summary>
     private void ApplyBounceColor()
     {
-        Color targetColor = (currentBounces >= 2) ? bounce2PlusColor : bounce1Color;
+        Color targetColor = bounceColor;
 
         if (bulletSR != null)
         {
@@ -281,7 +347,7 @@ public class RicochetBullet : MonoBehaviour
         if (bulletTrail != null)
         {
             bulletTrail.startColor = targetColor;
-            bulletTrail.endColor = new Color(targetColor.r, targetColor.g, targetColor.b, 0.2f);
+            bulletTrail.endColor = new Color(targetColor.r, targetColor.g, targetColor.b, 0f);
         }
     }
 

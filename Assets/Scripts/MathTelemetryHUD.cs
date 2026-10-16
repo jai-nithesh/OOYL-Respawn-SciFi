@@ -106,10 +106,15 @@ public class MathTelemetryHUD : MonoBehaviour
         }
 
         // ── Build Readout ──
+        bool isDilated = (timeScale < 0.99f);
+        string timeLine = isDilated
+            ? $"<color=#FFD700>│ TIME:</color>  <color=#FFD700>{timeScale:F2}x [SLOW-MO]</color> | <color=#00FFFF>HERO: {invComp:F2}x</color>"
+            : $"<color=#00FFCC>│ TIME:</color>  {timeScale:F2}x | INV-COMP: {invComp:F2}x";
+
         telemetryText.text =
             $"<color=#00FFFF>┌─ MATH TELEMETRY ──────────────┐</color>\n" +
             $"<color=#00FFCC>│ THETA:</color> {angleDeg:F1}° ({angleRad:F2} rad)\n" +
-            $"<color=#00FFCC>│ TIME:</color>  {timeScale:F2}x | INV-COMP: {invComp:F2}x\n" +
+            $"{timeLine}\n" +
             $"<color=#00FFCC>│ |V|:</color>   {velocityMag:F1} m/s\n" +
             $"<color=#00FFFF>└───────────────────────────────┘</color>";
     }

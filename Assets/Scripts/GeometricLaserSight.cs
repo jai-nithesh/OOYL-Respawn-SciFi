@@ -5,7 +5,7 @@ using UnityEngine.InputSystem;
 /// GeometricLaserSight – Real-time ricochet preview laser using Physics2D.Raycast
 /// and Vector2.Reflect math. Showcases the geometry theme to hackathon judges.
 /// ──────────────────────────────────────────────────────────────────────────────
-/// SETUP (2 steps only!):
+/// SETUP:
 ///   1. Add this script to the Player GameObject.
 ///   2. Assign firePoint (same as PlayerController's firePoint).
 ///   Everything else (LineRenderer, material, colors) is auto-configured in Awake().
@@ -27,7 +27,7 @@ public class GeometricLaserSight : MonoBehaviour
     public int previewBounces = 2;
 
     [Tooltip("Maximum ray distance per segment.")]
-    public float maxRayDistance = 50f;
+    public float maxRayDistance = 40f;
 
     [Tooltip("Tag that triggers reflection.")]
     public string bounceTag = "BounceWall";
@@ -36,23 +36,22 @@ public class GeometricLaserSight : MonoBehaviour
     [Tooltip("Key to toggle the laser on/off.")]
     public KeyCode toggleKey = KeyCode.V;
 
-    [Header("Visual")]
-    [Tooltip("Starting line width.")]
-    public float lineWidth = 0.04f;
+    [Header("Visual Styling (Tweakable)")]
+    [Tooltip("Starting line width for thin, clean laser beam.")]
+    public float lineWidth = 0.025f;
 
-    [Tooltip("Start color of the laser.")]
-    public Color startColor = new Color(0f, 1f, 1f, 0.9f); // Cyan
+    [Tooltip("Start color of the laser (sleek translucent cyan).")]
+    public Color startColor = new Color(0f, 0.9f, 1f, 0.75f);
 
-    [Tooltip("End color of the laser (after bounces).")]
-    public Color endColor = new Color(0.5f, 0f, 1f, 0.4f); // Purple fade
+    [Tooltip("End color of the laser after bounces.")]
+    public Color endColor = new Color(0.1f, 0.5f, 1f, 0.25f);
 
     // ───────── Private ─────────
     private LineRenderer lineRenderer;
     private bool isEnabled = true;
     private Camera mainCam;
-
-    // Layer masks
-    private int wallAndEnemyMask;
+    private int raycastLayerMask;
+    private readonly RaycastHit2D[] hitBuffer = new RaycastHit2D[16];
 
     private void Awake()
     {
@@ -65,15 +64,14 @@ public class GeometricLaserSight : MonoBehaviour
             lineRenderer = gameObject.AddComponent<LineRenderer>();
         }
 
-        // Use default sprite material (URP-compatible, no manual setup needed)
         lineRenderer.material = new Material(Shader.Find("Sprites/Default"));
         lineRenderer.startWidth = lineWidth;
-        lineRenderer.endWidth = lineWidth * 0.5f;
+        lineRenderer.endWidth = lineWidth * 0.7f;
         lineRenderer.startColor = startColor;
         lineRenderer.endColor = endColor;
         lineRenderer.positionCount = 0;
         lineRenderer.useWorldSpace = true;
-        lineRenderer.sortingOrder = 10;
+        lineRenderer.sortingOrder = 15; // Above all sprites and walls
         lineRenderer.numCapVertices = 4;
         lineRenderer.numCornerVertices = 4;
 
@@ -83,33 +81,31 @@ public class GeometricLaserSight : MonoBehaviour
             new GradientColorKey[]
             {
                 new GradientColorKey(startColor, 0f),
-                new GradientColorKey(new Color(0f, 0.8f, 1f, 1f), 0.5f),
+                new GradientColorKey(new Color(0.2f, 0.85f, 1f), 0.5f),
                 new GradientColorKey(endColor, 1f)
             },
             new GradientAlphaKey[]
             {
-                new GradientAlphaKey(0.9f, 0f),
-                new GradientAlphaKey(0.6f, 0.5f),
-                new GradientAlphaKey(0.2f, 1f)
+                new GradientAlphaKey(startColor.a, 0f),
+                new GradientAlphaKey(startColor.a * 0.6f, 0.5f),
+                new GradientAlphaKey(endColor.a, 1f)
             }
         );
         lineRenderer.colorGradient = gradient;
 
-        // Build layer mask: hit everything except "Bullet" layer
+        // Build layer mask: hit Default (walls) and CharacterBody (enemies)
+        // Exclude Bullet and CharacterFeet
         int bulletLayer = LayerMask.NameToLayer("Bullet");
-        int charBodyLayer = LayerMask.NameToLayer("CharacterBody");
         int charFeetLayer = LayerMask.NameToLayer("CharacterFeet");
 
-        // We want to hit Default (BounceWalls) and CharacterBody (hitboxes)
-        // but NOT bullets or CharacterFeet
-        wallAndEnemyMask = ~0; // Start with everything
-        if (bulletLayer != -1) wallAndEnemyMask &= ~(1 << bulletLayer);
-        if (charFeetLayer != -1) wallAndEnemyMask &= ~(1 << charFeetLayer);
+        raycastLayerMask = ~0;
+        if (bulletLayer != -1) raycastLayerMask &= ~(1 << bulletLayer);
+        if (charFeetLayer != -1) raycastLayerMask &= ~(1 << charFeetLayer);
     }
 
     private void Update()
     {
-        // Toggle
+        // Toggle input
         bool togglePressed = false;
         if (Keyboard.current != null)
         {
@@ -127,7 +123,8 @@ public class GeometricLaserSight : MonoBehaviour
 
         if (!isEnabled || firePoint == null)
         {
-            lineRenderer.positionCount = 0;
+            if (lineRenderer != null && lineRenderer.positionCount > 0)
+                lineRenderer.positionCount = 0;
             return;
         }
 
@@ -144,15 +141,12 @@ public class GeometricLaserSight : MonoBehaviour
         }
         else
         {
-            // Fallback: use mouse position
             if (mainCam == null) mainCam = Camera.main;
             if (mainCam == null) return;
 
-            Vector3 mousePos;
-            if (Mouse.current != null)
-                mousePos = Mouse.current.position.ReadValue();
-            else
-                mousePos = Input.mousePosition;
+            Vector3 mousePos = (Mouse.current != null) 
+                ? (Vector3)Mouse.current.position.ReadValue() 
+                : Input.mousePosition;
 
             Vector3 mouseWorld = mainCam.ScreenToWorldPoint(mousePos);
             mouseWorld.z = 0f;
@@ -163,29 +157,54 @@ public class GeometricLaserSight : MonoBehaviour
         Vector2 origin = firePoint.position;
         Vector2 direction = aimDirection.normalized;
 
-        // Max points: origin + (bounce points) + terminal point
         Vector3[] points = new Vector3[previewBounces + 2];
         int pointCount = 0;
-
         points[pointCount++] = origin;
+
+        Transform myRoot = transform.root;
+        Collider2D lastHitCollider = null;
 
         for (int bounce = 0; bounce <= previewBounces; bounce++)
         {
-            RaycastHit2D hit = Physics2D.Raycast(origin, direction, maxRayDistance, wallAndEnemyMask);
+            int hitCount = Physics2D.RaycastNonAlloc(origin, direction, hitBuffer, maxRayDistance, raycastLayerMask);
 
-            if (hit.collider != null)
+            RaycastHit2D closestValidHit = default;
+            bool hitFound = false;
+
+            for (int i = 0; i < hitCount; i++)
             {
-                points[pointCount++] = hit.point;
+                RaycastHit2D h = hitBuffer[i];
+                if (h.collider == null) continue;
 
-                // Check if it's a BounceWall — reflect and continue
-                if (hit.collider.CompareTag(bounceTag) && bounce < previewBounces)
+                // CRITICAL FIX: Ignore Player's own colliders (Hitbox, feet, body)
+                if (h.collider.transform.root == myRoot) continue;
+
+                // Ignore the same collider we just bounced off if we are right on its surface
+                if (lastHitCollider != null && h.collider == lastHitCollider && h.distance < 0.05f) continue;
+
+                closestValidHit = h;
+                hitFound = true;
+                break;
+            }
+
+            if (hitFound)
+            {
+                points[pointCount++] = closestValidHit.point;
+                lastHitCollider = closestValidHit.collider;
+
+                // If it's a BounceWall, reflect and continue
+                if (closestValidHit.collider.CompareTag(bounceTag) && bounce < previewBounces)
                 {
-                    direction = Vector2.Reflect(direction, hit.normal);
-                    origin = hit.point + hit.normal * 0.05f; // Offset slightly to avoid re-hitting
+                    Vector2 normal = closestValidHit.normal;
+                    if (normal.sqrMagnitude < 0.001f) normal = -direction;
+
+                    direction = Vector2.Reflect(direction, normal).normalized;
+                    // Nudge origin away from surface along normal to avoid self-collision
+                    origin = closestValidHit.point + normal * 0.04f;
                 }
                 else
                 {
-                    // Hit an enemy or non-bouncy surface — terminate
+                    // Hit an enemy or non-bouncy surface — stop
                     break;
                 }
             }

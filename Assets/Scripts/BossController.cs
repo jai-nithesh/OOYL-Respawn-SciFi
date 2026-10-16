@@ -126,6 +126,9 @@ public class BossController : MonoBehaviour
         {
             GameManager.Instance.UpdateBossHealthUI(currentHealth, maxHealth);
         }
+
+        nextFireTime = Time.time + fireRate;
+        nextNovaTime = Time.time + novaInterval;
     }
 
     private void Update()
@@ -163,12 +166,12 @@ public class BossController : MonoBehaviour
 
         // ── Firing ──
         float currentFireRate = isEnraged ? enragedFireRate : fireRate;
-        if (Time.unscaledTime >= nextFireTime)
+        if (Time.time >= nextFireTime)
         {
-            if (isEnraged && useNovaNext && Time.unscaledTime >= nextNovaTime)
+            if (isEnraged && useNovaNext && Time.time >= nextNovaTime)
             {
                 FireRadialNova();
-                nextNovaTime = Time.unscaledTime + novaInterval;
+                nextNovaTime = Time.time + novaInterval;
                 useNovaNext = false;
             }
             else
@@ -176,7 +179,7 @@ public class BossController : MonoBehaviour
                 FireFanSpread(isEnraged ? phase2FanAngles : phase1FanAngles);
                 if (isEnraged) useNovaNext = true;
             }
-            nextFireTime = Time.unscaledTime + currentFireRate;
+            nextFireTime = Time.time + currentFireRate;
         }
 
         // ── Animations ──

@@ -26,10 +26,23 @@ public class PlayerController : MonoBehaviour
     [Tooltip("Minimum seconds between shots.")]
     public float fireRate = 0.2f;
 
+    [Header("Shoot Effects (Tweakable)")]
+    [Tooltip("Screen shake duration when firing.")]
+    public float fireShakeDuration = 0.03f;
+
+    [Tooltip("Screen shake magnitude when firing. Set to 0 to disable shake.")]
+    public float fireShakeMagnitude = 0.02f;
+
     // ───────── Time Dilation Support ─────────
     [Header("Time Dilation")]
     [Tooltip("When true the player moves at real-world speed regardless of Time.timeScale.")]
     public bool useUnscaledTime = false;
+
+    [Tooltip("Speed multiplier for the player during Sandevistan (e.g. 1.4 = 40% faster).")]
+    public float speedMultiplierDuringDilation = 1.4f;
+
+    [Tooltip("Fire rate multiplier during Sandevistan (e.g. 0.5 = twice as fast).")]
+    public float fireRateMultiplierDuringDilation = 0.5f;
 
     // ───────── Health System ─────────
     [Header("Health")]
@@ -137,10 +150,11 @@ public class PlayerController : MonoBehaviour
             isFiring = Input.GetMouseButton(0);
         }
 
+        float effectiveFireRate = useUnscaledTime ? (fireRate * fireRateMultiplierDuringDilation) : fireRate;
         if (isFiring && Time.unscaledTime >= nextFireTime)
         {
             Fire();
-            nextFireTime = Time.unscaledTime + fireRate;
+            nextFireTime = Time.unscaledTime + effectiveFireRate;
         }
     }
 
@@ -153,13 +167,13 @@ public class PlayerController : MonoBehaviour
             return;
         }
 
-        // When time is dilated we compensate so the player keeps real-world speed.
+        // When time is dilated we compensate and boost so the player feels lightning fast.
         if (useUnscaledTime)
         {
             // Time.timeScale may be < 1; FixedUpdate still fires at fixedDeltaTime * timeScale.
-            // We want the player to feel full-speed, so scale velocity up.
+            // Scale velocity by compensation and speed multiplier so the player outpaces the world.
             float compensation = (Time.timeScale > 0f) ? (1f / Time.timeScale) : 1f;
-            rb.linearVelocity = moveInput * moveSpeed * compensation;
+            rb.linearVelocity = moveInput * (moveSpeed * speedMultiplierDuringDilation) * compensation;
         }
         else
         {
@@ -189,6 +203,7 @@ public class PlayerController : MonoBehaviour
 
         // Feed the speed to transition between Idle (0) and Moving (>0)
         anim.SetFloat("Speed", moveInput.sqrMagnitude);
+        anim.SetBool("IsMoving", moveInput.sqrMagnitude > 0.01f);
     }
 
     // ──────────────────────────────────────────────────
@@ -262,8 +277,20 @@ public class PlayerController : MonoBehaviour
             }
         }
 
-        // ── Camera Shake: Tiny kick on fire ──
-        CameraFollow.Shake(0.06f, 0.08f);
+        // ── Trigger Shoot Animation ──
+        if (anim != null)
+        {
+            Vector2 aimDir = (weaponPivot != null) ? (Vector2)weaponPivot.right : lastMoveDirection;
+            anim.SetFloat("AimX", aimDir.x);
+            anim.SetFloat("AimY", aimDir.y);
+            anim.SetTrigger("ShootTrigger");
+        }
+
+        // ── Camera Shake: Subtle kick on fire (tweakable in Inspector) ──
+        if (fireShakeMagnitude > 0f && fireShakeDuration > 0f)
+        {
+            CameraFollow.Shake(fireShakeDuration, fireShakeMagnitude);
+        }
     }
 
     // ──────────────────────────────────────────────────

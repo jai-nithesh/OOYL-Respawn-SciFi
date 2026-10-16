@@ -1,11 +1,14 @@
 using System.Collections;
 using UnityEngine;
 using UnityEngine.InputSystem;
+using UnityEngine.UI;
+using TMPro;
 
 /// <summary>
-/// Sandevistan-style time dilation active skill.
-/// Press a key to slow the world to 0.3× while the player moves at normal speed.
-/// Spawns ghosting / afterimage sprites that fade out behind the player.
+/// Sandevistan-style Time Dilation active skill.
+/// Press Left Shift to drop world time scale to 0.25x while the Hero moves 1.4x faster
+/// and fires twice as fast. Spawns glowing cyan cyber afterimages, warps audio pitch,
+/// and pulses a full-screen Chrono vignette to strongly convey that time has slowed down.
 /// </summary>
 public class TimeDilation : MonoBehaviour
 {
@@ -15,30 +18,50 @@ public class TimeDilation : MonoBehaviour
     public KeyCode activationKey = KeyCode.LeftShift;
 
     [Tooltip("Duration the effect lasts (real-world seconds).")]
-    public float duration = 3f;
+    public float duration = 4f;
 
     [Tooltip("Cooldown between uses (real-world seconds).")]
-    public float cooldown = 5f;
+    public float cooldown = 6f;
 
     // ───────── Time Settings ─────────
-    [Header("Time Settings")]
-    [Tooltip("World time scale while active (0.3 = 30% speed).")]
-    public float dilatedTimeScale = 0.3f;
+    [Header("Time & Speed Multipliers (Tweakable)")]
+    [Tooltip("World time scale while active (0.25 = 25% speed, enemies crawl).")]
+    [Range(0.05f, 0.9f)]
+    public float dilatedTimeScale = 0.25f;
+
+    [Tooltip("Hero movement speed multiplier during Sandevistan (1.4 = 40% faster than normal).")]
+    [Range(1f, 3f)]
+    public float playerSpeedMultiplier = 1.4f;
+
+    [Tooltip("Hero fire rate multiplier during Sandevistan (0.5 = twice as fast).")]
+    [Range(0.2f, 1f)]
+    public float playerFireRateMultiplier = 0.5f;
 
     // ───────── Ghosting / Afterimage ─────────
-    [Header("Ghosting / Afterimage")]
+    [Header("Ghosting / Afterimage (Tweakable)")]
     [Tooltip("Interval (real-world seconds) between ghost spawns.")]
-    public float ghostInterval = 0.1f;
+    public float ghostInterval = 0.08f;
 
     [Tooltip("How long each ghost persists before vanishing (real-world seconds).")]
-    public float ghostLifetime = 0.4f;
+    public float ghostLifetime = 0.35f;
 
-    [Tooltip("Starting alpha for the ghost sprite.")]
-    [Range(0f, 1f)]
-    public float ghostStartAlpha = 0.6f;
+    [Tooltip("Color tint for the ghost afterimage (electric neon cyan).")]
+    public Color ghostColor = new Color(0f, 0.9f, 1f, 0.7f);
 
     [Tooltip("Sorting order offset for ghosts (behind the player).")]
     public int ghostSortingOrderOffset = -1;
+
+    // ───────── Audio & Screen Effects ─────────
+    [Header("Audio & Screen Effects (Tweakable)")]
+    [Tooltip("Audio pitch during time dilation (0.6 = deep cinematic slow-mo).")]
+    [Range(0.2f, 1f)]
+    public float audioSlowPitch = 0.6f;
+
+    [Tooltip("Optional CanvasGroup on the Chrono Vignette overlay.")]
+    public CanvasGroup vignetteOverlay;
+
+    [Tooltip("Optional TextMeshProUGUI element to display active countdown and cooldown.")]
+    public TextMeshProUGUI statusText;
 
     // ───────── References ─────────
     [Header("References")]
@@ -52,6 +75,7 @@ public class TimeDilation : MonoBehaviour
     private bool isActive = false;
     private float nextActivationTime = 0f;
     private Coroutine activeCoroutine;
+    private const float DefaultFixedDeltaTime = 0.02f;
 
     // ──────────────────────────────────────────────────
     // Lifecycle
@@ -63,150 +87,246 @@ public class TimeDilation : MonoBehaviour
 
         if (playerSpriteRenderer == null)
             playerSpriteRenderer = GetComponent<SpriteRenderer>();
+
+        // Auto-find UI references if unassigned
+        FindUIReferences();
+    }
+
+    private void Start()
+    {
+        FindUIReferences();
+        if (vignetteOverlay != null)
+        {
+            vignetteOverlay.alpha = 0f;
+        }
+        if (statusText != null)
+        {
+            statusText.text = "";
+        }
+    }
+
+    private void FindUIReferences()
+    {
+        if (vignetteOverlay == null)
+        {
+            GameObject vigObj = GameObject.Find("ChronoVignette");
+            if (vigObj != null)
+            {
+                vignetteOverlay = vigObj.GetComponent<CanvasGroup>();
+            }
+        }
+
+        if (statusText == null)
+        {
+            GameObject txtObj = GameObject.Find("ChronoStatusText");
+            if (txtObj != null)
+            {
+                statusText = txtObj.GetComponent<TextMeshProUGUI>();
+            }
+        }
     }
 
     private void Update()
     {
-        if (IsKeyDown(activationKey) && !isActive && Time.unscaledTime >= nextActivationTime)
+        // Check activation
+        if (IsActivationKeyPressed() && !isActive && Time.unscaledTime >= nextActivationTime)
         {
             activeCoroutine = StartCoroutine(SandevistanRoutine());
         }
+
+        // Update cooldown / ready UI if statusText assigned
+        UpdateStatusUI();
     }
 
-    // Helper to check a KeyCode using the new Input System when available,
-    // falling back to legacy Input.GetKeyDown when not available or unmapped.
-    private bool IsKeyDown(KeyCode key)
+    private bool IsActivationKeyPressed()
     {
-        if (Keyboard.current == null)
-            return Input.GetKeyDown(key);
-
-        switch (key)
+        if (Keyboard.current != null)
         {
-            case KeyCode.LeftShift:
-                return Keyboard.current.leftShiftKey.wasPressedThisFrame;
-            case KeyCode.RightShift:
-                return Keyboard.current.rightShiftKey.wasPressedThisFrame;
-            case KeyCode.Space:
-                return Keyboard.current.spaceKey.wasPressedThisFrame;
-            case KeyCode.LeftControl:
-                return Keyboard.current.leftCtrlKey.wasPressedThisFrame;
-            case KeyCode.RightControl:
-                return Keyboard.current.rightCtrlKey.wasPressedThisFrame;
-            case KeyCode.E:
-                return Keyboard.current.eKey.wasPressedThisFrame;
-            case KeyCode.Q:
-                return Keyboard.current.qKey.wasPressedThisFrame;
-            case KeyCode.F:
-                return Keyboard.current.fKey.wasPressedThisFrame;
-            default:
-                // Unknown mapping; fall back to legacy Input for safety
-                return Input.GetKeyDown(key);
+            switch (activationKey)
+            {
+                case KeyCode.LeftShift:
+                    return Keyboard.current.leftShiftKey.wasPressedThisFrame;
+                case KeyCode.RightShift:
+                    return Keyboard.current.rightShiftKey.wasPressedThisFrame;
+                case KeyCode.Space:
+                    return Keyboard.current.spaceKey.wasPressedThisFrame;
+                case KeyCode.LeftControl:
+                    return Keyboard.current.leftCtrlKey.wasPressedThisFrame;
+                case KeyCode.E:
+                    return Keyboard.current.eKey.wasPressedThisFrame;
+                case KeyCode.Q:
+                    return Keyboard.current.qKey.wasPressedThisFrame;
+                case KeyCode.F:
+                    return Keyboard.current.fKey.wasPressedThisFrame;
+                default:
+                    break;
+            }
+        }
+        return Input.GetKeyDown(activationKey);
+    }
+
+    private void UpdateStatusUI()
+    {
+        if (statusText == null) return;
+
+        if (isActive)
+        {
+            // Status text is actively updated in SandevistanRoutine
+            return;
+        }
+
+        if (Time.unscaledTime < nextActivationTime)
+        {
+            float remainingCd = nextActivationTime - Time.unscaledTime;
+            statusText.text = $"<color=#778899>[L-SHIFT] CHRONO COOLDOWN: {remainingCd:F1}s</color>";
+        }
+        else
+        {
+            statusText.text = "<color=#00FFFF>[L-SHIFT] CHRONO DILATION: READY</color>";
         }
     }
 
     // ──────────────────────────────────────────────────
     // Core Sandevistan Coroutine
     // ──────────────────────────────────────────────────
-    /// <summary>
-    /// Drops Time.timeScale, enables unscaled movement on the player,
-    /// spawns afterimage ghosts, then restores everything.
-    /// </summary>
     private IEnumerator SandevistanRoutine()
     {
         isActive = true;
 
-        // ── Activate time dilation ──
+        // ── 1. Drop World Time Scale & Pitch ──
         Time.timeScale = dilatedTimeScale;
-        Time.fixedDeltaTime = 0.02f * dilatedTimeScale;   // keep physics step ratio correct
+        Time.fixedDeltaTime = DefaultFixedDeltaTime * dilatedTimeScale;
+        SetSceneAudioPitch(audioSlowPitch);
 
-        // Tell the player controller to use unscaled time
+        // ── 2. Empower the Hero ──
         if (playerController != null)
+        {
             playerController.useUnscaledTime = true;
+            playerController.speedMultiplierDuringDilation = playerSpeedMultiplier;
+            playerController.fireRateMultiplierDuringDilation = playerFireRateMultiplier;
+        }
 
-        // ── Spawn ghosts for the duration ──
+        // ── 3. Fade In Chrono Vignette ──
+        if (vignetteOverlay != null)
+        {
+            vignetteOverlay.alpha = 0.5f;
+        }
+
+        // ── 4. Main Active Loop ──
         float elapsed = 0f;
         while (elapsed < duration)
         {
-            // Safety: if player died mid-Sandevistan, abort and restore time
             if (playerController != null && playerController.IsDead)
             {
                 break;
             }
 
+            float remaining = Mathf.Max(0f, duration - elapsed);
+            if (statusText != null)
+            {
+                statusText.text = $"<color=#FFD700>⚡ SANDEVISTAN ACTIVE: {remaining:F1}s [{(dilatedTimeScale * 100f):F0}% WORLD SPEED] ⚡</color>";
+            }
+
+            // Pulse vignette subtly
+            if (vignetteOverlay != null)
+            {
+                float pulse = 0.4f + Mathf.PingPong(elapsed * 2f, 0.2f);
+                vignetteOverlay.alpha = pulse;
+            }
+
             SpawnGhost();
 
-            // Wait in REAL time (not affected by timeScale)
+            // Real-time wait (unaffected by timeScale)
             yield return new WaitForSecondsRealtime(ghostInterval);
             elapsed += ghostInterval;
         }
 
-        // ── Deactivate time dilation ──
+        // ── 5. Restore Normal Time & Pitch ──
+        RestoreTimeScale();
+    }
+
+    private void RestoreTimeScale()
+    {
         Time.timeScale = 1f;
-        Time.fixedDeltaTime = 0.02f;
+        Time.fixedDeltaTime = DefaultFixedDeltaTime;
+        SetSceneAudioPitch(1f);
 
         if (playerController != null)
+        {
             playerController.useUnscaledTime = false;
+            playerController.speedMultiplierDuringDilation = 1f;
+            playerController.fireRateMultiplierDuringDilation = 1f;
+        }
+
+        if (vignetteOverlay != null)
+        {
+            vignetteOverlay.alpha = 0f;
+        }
 
         isActive = false;
         nextActivationTime = Time.unscaledTime + cooldown;
     }
 
+    private void SetSceneAudioPitch(float pitch)
+    {
+        AudioSource[] sources = FindObjectsByType<AudioSource>(FindObjectsSortMode.None);
+        foreach (AudioSource s in sources)
+        {
+            if (s != null) s.pitch = pitch;
+        }
+    }
+
+    private void OnDisable()
+    {
+        RestoreTimeScale();
+    }
+
+    private void OnDestroy()
+    {
+        RestoreTimeScale();
+    }
+
     // ──────────────────────────────────────────────────
     // Ghosting / Afterimage Spawner
     // ──────────────────────────────────────────────────
-    /// <summary>
-    /// Instantiates a temporary copy of the player's current sprite
-    /// at their current position, then fades it out over ghostLifetime.
-    /// </summary>
     private void SpawnGhost()
     {
         if (playerSpriteRenderer == null) return;
 
-        // Create a new empty GameObject for the ghost
-        GameObject ghost = new GameObject("Afterimage");
+        GameObject ghost = new GameObject("ChronoAfterimage");
         ghost.transform.position = transform.position;
         ghost.transform.rotation = transform.rotation;
         ghost.transform.localScale = transform.localScale;
 
-        // Add a SpriteRenderer and clone the current sprite
         SpriteRenderer ghostSR = ghost.AddComponent<SpriteRenderer>();
         ghostSR.sprite = playerSpriteRenderer.sprite;
         ghostSR.sortingLayerName = playerSpriteRenderer.sortingLayerName;
         ghostSR.sortingOrder = playerSpriteRenderer.sortingOrder + ghostSortingOrderOffset;
-        ghostSR.color = new Color(
-            playerSpriteRenderer.color.r,
-            playerSpriteRenderer.color.g,
-            playerSpriteRenderer.color.b,
-            ghostStartAlpha
-        );
+        ghostSR.color = ghostColor;
         ghostSR.material = new Material(playerSpriteRenderer.material);
 
-        // Start the fade-out coroutine on this MonoBehaviour
-        // (the ghost itself has no MonoBehaviour)
         StartCoroutine(FadeAndDestroyGhost(ghost, ghostSR));
     }
 
-    /// <summary>
-    /// Linearly fades the ghost's alpha from ghostStartAlpha → 0 over ghostLifetime,
-    /// then Destroys the ghost GameObject.
-    /// </summary>
     private IEnumerator FadeAndDestroyGhost(GameObject ghost, SpriteRenderer ghostSR)
     {
         float elapsed = 0f;
+        Color startCol = ghostColor;
 
         while (elapsed < ghostLifetime)
         {
             elapsed += Time.unscaledDeltaTime;
-            float alpha = Mathf.Lerp(ghostStartAlpha, 0f, elapsed / ghostLifetime);
+            float t = elapsed / ghostLifetime;
+            float alpha = Mathf.Lerp(startCol.a, 0f, t);
 
             if (ghostSR != null)
             {
-                Color c = ghostSR.color;
+                Color c = startCol;
                 c.a = alpha;
                 ghostSR.color = c;
             }
 
-            yield return null;   // wait one frame
+            yield return null;
         }
 
         if (ghost != null)
@@ -216,9 +336,6 @@ public class TimeDilation : MonoBehaviour
     // ──────────────────────────────────────────────────
     // Public API
     // ──────────────────────────────────────────────────
-    /// <summary>Returns true while the Sandevistan effect is active.</summary>
     public bool IsActive => isActive;
-
-    /// <summary>Remaining cooldown in real-world seconds.</summary>
     public float CooldownRemaining => Mathf.Max(0f, nextActivationTime - Time.unscaledTime);
 }
